@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Bot, ArrowRight, Menu, X, Sparkles } from 'lucide-react';
+import { Bot, ArrowRight, Menu, X, Sparkles, User, ShieldCheck, LogIn } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../context/AuthContext';
 
-export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCompanyModal }) {
+export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCompanyModal, onOpenLoginModal, onNavigateDashboard }) {
+  const { user } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -13,14 +15,6 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
-
-  const handleNavClick = (href, e) => {
-    if (href === '#company') {
-      e.preventDefault();
-      onOpenCompanyModal();
-    }
-    setMobileMenuOpen(false);
-  };
 
   return (
     <>
@@ -37,7 +31,7 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
         >
           <div className="flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6 py-1.5 h-full w-full">
             
-            {/* Brand Logo matching screenshot */}
+            {/* Brand Logo */}
             <a
               href="#home"
               className="font-fustat font-extrabold text-[20px] sm:text-[22px] tracking-tight text-black flex items-center gap-2 group select-none"
@@ -48,7 +42,7 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
               <span>Assist<span className="text-[#0084FF]">.</span></span>
             </a>
 
-            {/* Desktop Navigation Links matching exact image */}
+            {/* Desktop Navigation Links */}
             <nav className="hidden md:flex items-center gap-8">
               <a href="#home" className="font-sans text-[14px] font-medium text-black/70 hover:text-black transition-colors">
                 Home
@@ -67,14 +61,40 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
               </a>
             </nav>
 
-            {/* Right Call-to-Action Pill matching exact image `Get Started →` */}
+            {/* Right Call-to-Action Pill & Authentication Trigger */}
             <div className="flex items-center gap-3">
+              {user ? (
+                <button
+                  onClick={onNavigateDashboard}
+                  className={`group h-9 px-4 rounded-[12px] text-[13px] font-bold flex items-center gap-2 border shadow-xs transition-all cursor-pointer ${
+                    user.role === 'admin'
+                      ? 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-800'
+                      : 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-[#0084FF]'
+                  }`}
+                >
+                  <img
+                    src={user.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face'}
+                    alt="User Avatar"
+                    className="w-5 h-5 rounded-full object-cover"
+                  />
+                  <span>{user.role === 'admin' ? 'Admin Control' : 'User Dashboard'}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={onOpenLoginModal}
+                  className="h-9 px-3.5 rounded-[12px] bg-black/5 hover:bg-black/10 border border-black/10 text-[13px] font-semibold flex items-center gap-1.5 text-black transition-all cursor-pointer"
+                >
+                  <LogIn className="w-3.5 h-3.5 text-[#0084FF]" />
+                  <span>Sign In</span>
+                </button>
+              )}
+
               <button
                 onClick={onOpenGetStartedModal}
-                className="group h-9 px-4 sm:px-5 rounded-[12px] bg-black/5 hover:bg-black/10 border border-black/10 text-[13px] sm:text-[14px] font-semibold flex items-center gap-2 text-black transition-all hover:shadow-md active:scale-95 cursor-pointer"
+                className="group h-9 px-4 sm:px-5 rounded-[12px] bg-[#0084FF] hover:bg-[#0074E0] text-white text-[13px] sm:text-[14px] font-bold flex items-center gap-2 shadow-xs transition-all cursor-pointer"
               >
                 <span>Get Started</span>
-                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform text-black/80" />
+                <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
               </button>
 
               {/* Mobile Menu Toggle */}
@@ -130,13 +150,23 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
               </div>
 
               <div className="pt-6 border-t border-black/10 flex flex-col gap-3">
-                <button
-                  onClick={() => { setMobileMenuOpen(false); onOpenGetStartedModal(); }}
-                  className="w-full h-11 rounded-[14px] bg-[#0084FF] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>Get Started Free</span>
-                </button>
+                {user ? (
+                  <button
+                    onClick={() => { setMobileMenuOpen(false); onNavigateDashboard(); }}
+                    className="w-full h-11 rounded-[14px] bg-[#0084FF] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md"
+                  >
+                    <User className="w-4 h-4" />
+                    <span>Open Dashboard</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { setMobileMenuOpen(false); onOpenLoginModal(); }}
+                    className="w-full h-11 rounded-[14px] bg-black/5 hover:bg-black/10 text-black font-bold text-sm flex items-center justify-center gap-2"
+                  >
+                    <LogIn className="w-4 h-4 text-[#0084FF]" />
+                    <span>Sign In / Passport Auth</span>
+                  </button>
+                )}
               </div>
             </motion.div>
           </>

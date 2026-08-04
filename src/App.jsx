@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import HeroSection from './components/HeroSection';
 import FeaturesSection from './components/FeaturesSection';
@@ -10,13 +11,19 @@ import FeatureModal from './components/FeatureModal';
 import CompanyModal from './components/CompanyModal';
 import GetStartedModal from './components/GetStartedModal';
 import WatchDemoModal from './components/WatchDemoModal';
+import LoginModal from './components/LoginModal';
+import UserDashboard from './pages/UserDashboard';
+import AdminDashboard from './pages/AdminDashboard';
 
-export default function App() {
+function MainApp() {
+  const { user } = useAuth();
+  const [currentView, setCurrentView] = useState('home'); // 'home' | 'dashboard' | 'admin-dashboard'
   const [isTryModalOpen, setIsTryModalOpen] = useState(false);
   const [isFeatureModalOpen, setIsFeatureModalOpen] = useState(false);
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
   const [isGetStartedModalOpen, setIsGetStartedModalOpen] = useState(false);
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [activeFeatureId, setActiveFeatureId] = useState('transcription');
   const [initialPrompt, setInitialPrompt] = useState('');
 
@@ -30,6 +37,45 @@ export default function App() {
     setIsFeatureModalOpen(true);
   };
 
+  const handleNavigateDashboard = () => {
+    if (!user) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+    if (user.role === 'admin') {
+      setCurrentView('admin-dashboard');
+    } else {
+      setCurrentView('dashboard');
+    }
+  };
+
+  const handleLoginSuccess = (authenticatedUser) => {
+    if (authenticatedUser?.role === 'admin') {
+      setCurrentView('admin-dashboard');
+    } else {
+      setCurrentView('dashboard');
+    }
+  };
+
+  // Render Protected Dashboards when view state changes
+  if (currentView === 'dashboard') {
+    return (
+      <UserDashboard
+        onNavigateHome={() => setCurrentView('home')}
+        onOpenTryModal={() => handleOpenTryModal('')}
+      />
+    );
+  }
+
+  if (currentView === 'admin-dashboard') {
+    return (
+      <AdminDashboard
+        onNavigateHome={() => setCurrentView('home')}
+      />
+    );
+  }
+
+  // Render Main Landing Page
   return (
     <div className="min-h-screen bg-white text-[#171717] font-sans antialiased selection:bg-[#0084FF]/20 selection:text-[#0084FF] relative overflow-x-hidden">
       {/* Floating Liquid-Glass Navigation Bar */}
@@ -37,11 +83,13 @@ export default function App() {
         onOpenTryModal={() => handleOpenTryModal('')}
         onOpenGetStartedModal={() => setIsGetStartedModalOpen(true)}
         onOpenCompanyModal={() => setIsCompanyModalOpen(true)}
+        onOpenLoginModal={() => setIsLoginModalOpen(true)}
+        onNavigateDashboard={handleNavigateDashboard}
       />
 
       {/* Main Content */}
       <main>
-        {/* Section 1: Hero Landing Page matching exact 8-badge layout */}
+        {/* Section 1: Hero Landing Page */}
         <HeroSection
           onOpenTryModal={() => handleOpenTryModal('')}
           onOpenFeatureModal={handleOpenFeatureModal}
@@ -99,6 +147,21 @@ export default function App() {
         isOpen={isDemoModalOpen}
         onClose={() => setIsDemoModalOpen(false)}
       />
+
+      {/* MODAL 6: Unified Passport.js Login Modal (Google OAuth + Admin Local Strategy) */}
+      <LoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        onSuccessRedirect={handleLoginSuccess}
+      />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <MainApp />
+    </AuthProvider>
   );
 }

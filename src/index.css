@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-outfit: 'Outfit', sans-serif;
+    --font-fustat: 'Fustat', sans-serif;
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #ffffff;
+    color: #171717;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.font-outfit {
+  font-family: var(--font-outfit);
+}
+
+.font-fustat {
+  font-family: var(--font-fustat);
+}
+
+.font-sans {
+  font-family: var(--font-sans);
+}
+
+/* Custom Inset & Liquid Glow Shadows */
+.shadow-primary-btn {
+  box-shadow: inset 0px 4px 4px 0px rgba(255, 255, 255, 0.35), 0 10px 25px -5px rgba(0, 132, 255, 0.25);
+}
+
+.shadow-liquid-glass {
+  box-shadow: inset 0 2.5px 4px 0 rgba(255, 255, 255, 0.8), 0 12px 32px -4px rgba(0, 132, 255, 0.12);
+}
+
+.shadow-liquid-green {
+  box-shadow: inset 0 2.5px 4px 0 rgba(255, 255, 255, 0.8), 0 12px 32px -4px rgba(16, 185, 129, 0.12);
+}
+
+.shadow-liquid-purple {
+  box-shadow: inset 0 2.5px 4px 0 rgba(255, 255, 255, 0.8), 0 12px 32px -4px rgba(147, 51, 234, 0.12);
+}
+
+/* Video blend filter */
+.blend-video {
+  filter: brightness(1.02) contrast(1.04);
+}
+
+/* Subtle scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

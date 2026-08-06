@@ -34,8 +34,12 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
             <ArrowLeft className="w-4 h-4" />
           </button>
 
-          <div className="font-fustat font-extrabold text-[20px] text-black flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white">
+          <div className="font-fustat font-extrabold text-[20px] text-black flex items-center gap-2.5">
+            <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
+              <img src="/college-logo.png" alt="CHARUSAT Logo" className="h-6 w-auto object-contain" />
+            </div>
+            <div className="h-4 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
+            <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white shrink-0">
               <Bot className="w-4 h-4" />
             </div>
             <span>Revora Dashboard</span>

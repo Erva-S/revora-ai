@@ -33,11 +33,17 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
             
             {/* Brand Logo & College Logo */}
             <div className="flex items-center gap-2.5">
-              <img
-                src="/college-logo.png"
-                alt="College Logo"
-                className="h-8 w-auto object-contain shrink-0"
-              />
+              <a
+                href="#home"
+                title="CHARUSAT - Charotar University of Science and Technology"
+                className="flex items-center gap-2 bg-white/80 px-2 py-1 rounded-xl border border-black/5 shadow-2xs hover:bg-white transition-all shrink-0"
+              >
+                <img
+                  src="/college-logo.png"
+                  alt="CHARUSAT - Charotar University of Science and Technology"
+                  className="h-7 sm:h-8 w-auto object-contain shrink-0"
+                />
+              </a>
               <div className="h-5 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
               <a
                 href="#home"
@@ -140,14 +146,19 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
             >
               <div>
                 <div className="flex items-center justify-between pb-6 border-b border-black/10">
-                  <div className="font-fustat font-extrabold text-[18px] tracking-tight text-black flex items-center gap-2">
-                    <img
-                      src="/college-logo.png"
-                      alt="College Logo"
-                      className="h-6 w-auto object-contain"
-                    />
-                    <Bot className="w-4 h-4 text-[#0084FF]" />
-                    <span>Revora.</span>
+                  <div className="flex items-center gap-2">
+                    <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs">
+                      <img
+                        src="/college-logo.png"
+                        alt="CHARUSAT - Charotar University of Science and Technology"
+                        className="h-6 w-auto object-contain"
+                      />
+                    </div>
+                    <div className="h-4 w-[1px] bg-black/15" />
+                    <div className="font-fustat font-extrabold text-[17px] tracking-tight text-black flex items-center gap-1.5">
+                      <Bot className="w-4 h-4 text-[#0084FF]" />
+                      <span>Revora.</span>
+                    </div>
                   </div>
                   <button onClick={() => setMobileMenuOpen(false)} className="p-1 rounded-lg text-black/60">
                     <X className="w-5 h-5" />

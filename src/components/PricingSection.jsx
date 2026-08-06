@@ -22,7 +22,7 @@ export default function PricingSection({ onOpenTryModal }) {
       popular: false,
     },
     {
-      name: 'Pro Assist',
+      name: 'Pro Revora',
       description: 'Perfect for power users and fast-growing professional teams.',
       monthlyPrice: '$49',
       annualPrice: '$39',

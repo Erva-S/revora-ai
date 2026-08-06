@@ -1,6 +1,6 @@
-# React + Vite
+# Revora - Modern AI Assistant
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Revora is an AI-powered assistant featuring real-time meeting transcription, document synthesis, and automated task execution.
 
 Currently, two official plugins are available:
 

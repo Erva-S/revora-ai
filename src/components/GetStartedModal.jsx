@@ -66,7 +66,7 @@ export default function GetStartedModal({ isOpen, onClose }) {
                 <Bot className="w-5 h-5" />
               </div>
               <h3 className="font-outfit font-bold text-[18px] text-black">
-                Get Started with Assist
+                Get Started with Revora
               </h3>
             </div>
             <button
@@ -151,14 +151,14 @@ export default function GetStartedModal({ isOpen, onClose }) {
                 </div>
                 <h4 className="font-outfit font-black text-2xl text-black">Workspace Ready!</h4>
                 <p className="text-xs text-black/60 max-w-[340px] mx-auto">
-                  Welcome to <strong>{workspaceName || 'your new workspace'}</strong>. Assist AI companion has been provisioned and ready for your team.
+                  Welcome to <strong>{workspaceName || 'your new workspace'}</strong>. Revora AI companion has been provisioned and ready for your team.
                 </p>
 
                 <button
                   onClick={resetForm}
                   className="w-full py-3 rounded-xl bg-black hover:bg-neutral-800 text-white font-bold text-xs shadow-md cursor-pointer mt-4"
                 >
-                  Launch Assist Dashboard
+                  Launch Revora Dashboard
                 </button>
               </div>
             )}

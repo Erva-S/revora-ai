@@ -26,7 +26,7 @@ export function AuthProvider({ children }) {
           email: authUser.email,
           name: profile.full_name || authUser.user_metadata?.full_name || authUser.user_metadata?.name || 'User',
           avatar: profile.avatar_url || authUser.user_metadata?.avatar_url || null,
-          role: profile.role || (authUser.email === 'admin@assist.ai' ? 'admin' : 'user'),
+          role: profile.role || (authUser.email === 'admin@revora.ai' ? 'admin' : 'user'),
           createdAt: profile.created_at || authUser.created_at,
         };
       }
@@ -35,7 +35,7 @@ export function AuthProvider({ children }) {
     }
 
     // Fallback if profiles table row does not exist yet
-    const fallbackRole = authUser.email?.toLowerCase() === 'admin@assist.ai' ? 'admin' : 'user';
+    const fallbackRole = authUser.email?.toLowerCase() === 'admin@revora.ai' ? 'admin' : 'user';
     return {
       id: authUser.id,
       email: authUser.email,
@@ -122,53 +122,27 @@ export function AuthProvider({ children }) {
     setError(null);
     const cleanEmail = email.trim().toLowerCase();
     try {
-      let { data, error: authError } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
         password,
       });
+      if (error) throw error;
 
-      // If user does not exist in Supabase Auth yet, attempt auto signup for admin
-      if (authError && (authError.message.includes('Invalid login credentials') || authError.status === 400)) {
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: {
-            data: {
-              full_name: 'System Admin',
-              role: 'admin',
-            },
-          },
-        });
+      // Fetch user role from profiles table
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', data.user.id)
+        .single();
 
-        if (!signUpError && signUpData?.user) {
-          data = signUpData;
-          authError = null;
-        }
-      }
-
-      if (authError) {
-        // Fallback to Express backend if Supabase local credentials not connected
-        const res = await fetch('/auth/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail, password }),
-        });
-        const expressData = await res.json();
-        if (expressData.success && expressData.user) {
-          setUser(expressData.user);
-          return { success: true, user: expressData.user };
-        }
-        setError(authError.message || expressData.message || 'Admin authentication failed');
-        return { success: false, message: authError.message || expressData.message };
+      if (profileError || profile?.role !== 'admin') {
+        await supabase.auth.signOut();
+        const msg = "Access denied: Admin privileges required.";
+        setError(msg);
+        return { success: false, message: msg };
       }
 
       const userProfile = await fetchUserProfile(data.user);
-      if (userProfile.role !== 'admin') {
-        setError('Access denied: Account role is not admin.');
-        await supabase.auth.signOut();
-        return { success: false, message: 'Access denied: Admin role required.' };
-      }
-
       setUser(userProfile);
       return { success: true, user: userProfile };
     } catch (err) {
@@ -191,7 +165,7 @@ export function AuthProvider({ children }) {
     } catch (err) {
       setUser({
         id: 'demo_user_123',
-        email: 'alex.user@assist.ai',
+        email: 'alex.user@revora.ai',
         name: 'Alex Rivera',
         avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
         role: 'user',

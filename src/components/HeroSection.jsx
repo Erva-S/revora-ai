@@ -153,7 +153,7 @@ export default function HeroSection({ onOpenTryModal, onOpenFeatureModal }) {
             {/* Display Title */}
             <h1 className="font-outfit font-black text-[40px] sm:text-[50px] lg:text-[62px] leading-[1.06] tracking-[-3px] mt-6 select-none text-black">
               Your All in One <br />
-              <span className="text-black">Assist.</span>
+              <span className="text-black">Revora.</span>
             </h1>
 
             {/* Body Paragraph */}
@@ -169,7 +169,7 @@ export default function HeroSection({ onOpenTryModal, onOpenFeatureModal }) {
                 whileTap={{ scale: 0.97 }}
                 className="pl-7 pr-3 py-3 rounded-full bg-[#0084FF] hover:bg-[#0074E0] text-white flex items-center gap-4 text-base font-bold transition-all w-fit shadow-xl shadow-primary-btn cursor-pointer group"
               >
-                <span>Try Assist. Free</span>
+                <span>Try Revora. Free</span>
                 <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center text-[#0084FF] group-hover:translate-x-0.5 transition-transform duration-200 shadow-xs">
                   <ChevronRight className="w-4.5 h-4.5 stroke-[3px]" />
                 </div>

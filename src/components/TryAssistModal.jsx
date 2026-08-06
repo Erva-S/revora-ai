@@ -17,7 +17,7 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
       setMessages([
         {
           role: 'assistant',
-          content: 'Hello! I am **Assist.**, your AI companion. Select a quick preset below or type any question or task to get started!',
+          content: 'Hello! I am **Revora.**, your AI companion. Select a quick preset below or type any question or task to get started!',
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
@@ -38,15 +38,15 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
       prompt: 'Summarize this document: Key findings from our 2026 AI Product Adoption & Enterprise Benchmark Report',
     },
     {
-      title: 'Create a to-do list',
+      title: 'Generate task list',
       icon: CheckSquare,
       color: 'from-[#9333EA] to-[#7E22CE]',
-      prompt: 'Create a prioritized to-do list for today focusing on sprint delivery, design reviews, and client updates',
+      prompt: 'Create a prioritized to-do list for today focusing on engineering and architecture',
     },
   ];
 
-  const handleGenerate = async (customPrompt) => {
-    const textToSubmit = customPrompt || prompt;
+  const handleGenerate = async (customText) => {
+    const textToSubmit = customText || prompt;
     if (!textToSubmit.trim()) return;
 
     const userMessage = {
@@ -65,13 +65,13 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
       const lower = textToSubmit.toLowerCase();
 
       if (lower.includes('email')) {
-        responseText = `Subject: Q3 Roadmap Sync & Strategy Alignment\n\nHi Product Team,\n\nI hope you're having a productive week. I would like to schedule a 30-minute sync to review our proposed Q3 product roadmap features, engineering milestones, and resource allocation.\n\nProposed Agenda:\n1. Q3 High-Priority Deliverables & Timelines\n2. Technical Dependencies & API Integrations\n3. Q&A & Resource Allocation\n\nPlease let me know your availability for tomorrow morning.\n\nBest regards,\nAssist AI Automated Workspace`;
+        responseText = `Subject: Q3 Roadmap Sync & Strategy Alignment\n\nHi Product Team,\n\nI hope you're having a productive week. I would like to schedule a 30-minute sync to review our proposed Q3 product roadmap features, engineering milestones, and resource allocation.\n\nProposed Agenda:\n1. Q3 High-Priority Deliverables & Timelines\n2. Technical Dependencies & API Integrations\n3. Q&A & Resource Allocation\n\nPlease let me know your availability for tomorrow morning.\n\nBest regards,\nRevora AI Automated Workspace`;
       } else if (lower.includes('summarize')) {
         responseText = `Executive Summary — 2026 AI Product Adoption Report:\n\n• Key Finding 1: 87% of enterprise organizations report a 4.2x increase in workflow efficiency after deploying autonomous AI assistants.\n• Key Finding 2: Response times for multi-step document processing decreased from 45 minutes to under 8 seconds.\n• Key Finding 3: Security & privacy compliance remain top criteria, with 99.99% neural encryption adoption rate.\n\nRecommendation: Accelerate deployment of liquid-glass UI models across enterprise teams.`;
       } else if (lower.includes('to-do') || lower.includes('todo') || lower.includes('list')) {
         responseText = `Today's Action Items & Prioritized Tasks:\n\n[High Priority]\n✓ 1. Review and approve Q3 Engineering Architecture Spec\n✓ 2. Finalize UI liquid-glass component styling and responsive layout\n\n[Medium Priority]\n✓ 3. Conduct 2:00 PM team sync on AI agent integration\n✓ 4. Verify end-to-end security compliance audit\n\n[Low Priority]\n✓ 5. Update developer documentation & release notes`;
       } else {
-        responseText = `Here is your requested output for: "${textToSubmit}"\n\nAssist AI has processed your query with zero-latency streaming. All parameters are optimized for maximum accuracy and efficiency. Let me know if you would like me to refine or export this output!`;
+        responseText = `Here is your requested output for: "${textToSubmit}"\n\nRevora AI has processed your query with zero-latency streaming. All parameters are optimized for maximum accuracy and efficiency. Let me know if you would like me to refine or export this output!`;
       }
 
       setMessages((prev) => [
@@ -130,7 +130,7 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
               </div>
               <div>
                 <h3 className="font-outfit font-bold text-[18px] text-black leading-tight flex items-center gap-2">
-                  Assist AI Live Playground
+                  Revora AI Live Playground
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#0084FF]/10 text-[#0084FF] border border-[#0084FF]/20">
                     Interactive Demo
                   </span>
@@ -231,7 +231,7 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
                 </div>
                 <div className="px-4 py-3 rounded-[20px] rounded-tl-xs bg-white border border-black/5 text-xs text-black/60 flex items-center gap-2 shadow-xs">
                   <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#0084FF]" />
-                  <span>Assist AI is thinking and generating response...</span>
+                  <span>Revora AI is thinking and generating response...</span>
                 </div>
               </motion.div>
             )}
@@ -244,7 +244,7 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleGenerate()}
-              placeholder="Ask Assist AI anything or type a prompt..."
+              placeholder="Ask Revora AI anything or type a prompt..."
               className="flex-1 px-4 py-3 rounded-[16px] bg-black/5 border border-black/10 focus:border-[#0084FF] focus:bg-white text-sm font-sans text-black focus:outline-none transition-all placeholder:text-black/40"
             />
             <button

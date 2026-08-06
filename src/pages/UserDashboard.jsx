@@ -38,7 +38,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
             <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white">
               <Bot className="w-4 h-4" />
             </div>
-            <span>Assist Dashboard</span>
+            <span>Revora Dashboard</span>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-[#0084FF] uppercase">
               User Portal
             </span>
@@ -82,7 +82,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
               Welcome back, {user?.name || 'User'}!
             </h1>
             <p className="font-sans text-sm text-white/80 mt-2 leading-relaxed">
-              Your AI meeting assistant is active and ready to transcribe streams, summarize PDFs, and extract tasks.
+              Your Revora AI assistant is active and ready to transcribe streams, summarize PDFs, and extract tasks.
             </p>
           </div>
 
@@ -91,7 +91,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
             className="relative z-10 px-6 py-3.5 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer shrink-0 flex items-center gap-2"
           >
             <Sparkles className="w-4 h-4 text-[#0084FF]" />
-            <span>Launch AI Assistant</span>
+            <span>Launch Revora Assistant</span>
           </button>
 
           {/* Backdrop ambient blur circle */}

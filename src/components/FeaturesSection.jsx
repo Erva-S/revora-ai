@@ -9,7 +9,7 @@ export default function FeaturesSection({ onOpenTryModal }) {
     {
       icon: Zap,
       title: 'Autonomous Task Execution',
-      description: 'Assist breaks complex goals into multi-step workflows, executing code, drafting emails, and updating tools autonomously.',
+      description: 'Revora breaks complex goals into multi-step workflows, executing code, drafting emails, and updating tools autonomously.',
       tag: 'Core Engine',
       color: 'from-[#0084FF] to-[#0066CC]',
     },
@@ -53,8 +53,8 @@ export default function FeaturesSection({ onOpenTryModal }) {
   const showcaseTabs = [
     {
       id: 'assistant',
-      title: 'Conversational Intelligence',
-      badge: 'Smart Reasoning',
+      title: 'AI Companion Interface',
+      badge: 'Natural Interaction',
       heading: 'Natural AI assistance tailored to your editorial rhythm.',
       description: 'Engage in fluid conversations with an assistant that understands nuanced instructions, technical codebases, and visual mockups instantly.',
       highlights: ['Multi-modal vision & text understanding', 'Adaptive tone & formatting', 'Code generation with live execution'],
@@ -65,7 +65,7 @@ export default function FeaturesSection({ onOpenTryModal }) {
       title: 'Document & PDF Intelligence',
       badge: 'Instant Analysis',
       heading: 'Extract insights from thousands of pages in seconds.',
-      description: 'Upload complex PDFs, spreadsheets, or technical documentation. Assist synthesizes summaries, tables, and actionable insights.',
+      description: 'Upload complex PDFs, spreadsheets, or technical documentation. Revora synthesizes summaries, tables, and actionable insights.',
       highlights: ['Deep semantic document parsing', 'Source reference citations', 'Export to PDF, Markdown & CSV'],
       previewType: 'doc',
     },
@@ -115,7 +115,7 @@ export default function FeaturesSection({ onOpenTryModal }) {
             transition={{ delay: 0.2 }}
             className="font-sans text-[17px] text-black/60 tracking-[-0.5px] mt-4 leading-relaxed"
           >
-            Assist combines state-of-the-art neural models with liquid-glass interfaces to give you an ultra-responsive corporate digital companion.
+            Revora combines state-of-the-art neural models with liquid-glass interfaces to give you an ultra-responsive corporate digital companion.
           </motion.p>
         </div>
 
@@ -130,57 +130,49 @@ export default function FeaturesSection({ onOpenTryModal }) {
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
                 transition={{ delay: idx * 0.08 }}
-                whileHover={{ y: -4, scale: 1.01 }}
-                className="group p-7 rounded-[24px] bg-gradient-to-br from-white to-neutral-50/60 border border-black/10 hover:border-[#0084FF]/40 shadow-xs hover:shadow-xl transition-all duration-300 flex flex-col justify-between"
+                whileHover={{ y: -4 }}
+                className="p-8 rounded-[24px] bg-white border border-black/10 hover:border-black/20 shadow-xs hover:shadow-lg transition-all flex flex-col justify-between"
               >
                 <div>
-                  <div className="flex items-center justify-between mb-5">
-                    <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${item.color} flex items-center justify-center text-white shadow-md group-hover:scale-110 transition-transform duration-300`}>
-                      <Icon className="w-6 h-6" />
-                    </div>
-                    <span className="font-sans text-[11px] font-bold tracking-wider uppercase px-2.5 py-1 rounded-full bg-black/5 text-black/60 group-hover:bg-[#0084FF]/10 group-hover:text-[#0084FF] transition-colors">
-                      {item.tag}
-                    </span>
+                  <div className={`w-12 h-12 rounded-[18px] bg-gradient-to-br ${item.color} flex items-center justify-center text-white mb-6 shadow-md`}>
+                    <Icon className="w-6 h-6" />
                   </div>
-
-                  <h3 className="font-outfit font-bold text-[20px] text-black mb-2 tracking-tight group-hover:text-[#0084FF] transition-colors">
-                    {item.title}
-                  </h3>
-
-                  <p className="font-sans text-[14px] text-black/60 leading-relaxed">
-                    {item.description}
-                  </p>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-outfit font-extrabold text-[20px] text-black">{item.title}</h3>
+                  </div>
+                  <p className="font-sans text-[14px] text-black/60 leading-relaxed mt-2">{item.description}</p>
                 </div>
-
-                <div className="mt-6 pt-4 border-t border-black/5 flex items-center text-[13px] font-bold text-[#0084FF] group-hover:translate-x-1 transition-transform">
-                  <span>Explore Feature</span>
-                  <ArrowRight className="w-4 h-4 ml-1" />
+                <div className="mt-6 pt-4 border-t border-black/5 flex items-center justify-between">
+                  <span className="text-[11px] font-mono font-semibold text-black/40 uppercase tracking-wider">{item.tag}</span>
+                  <ArrowRight className="w-4 h-4 text-black/30" />
                 </div>
               </motion.div>
             );
           })}
         </div>
 
-        {/* Interactive Showcase Tabs Container */}
-        <div className="w-full bg-gradient-to-br from-white via-neutral-50 to-sky-50/30 rounded-[32px] border border-black/10 p-6 sm:p-10 shadow-lg">
-          {/* Tab buttons */}
-          <div className="flex flex-wrap items-center justify-center gap-3 mb-10 pb-4 border-b border-black/5">
+        {/* Deep Interactive Showcase Tabs */}
+        <div className="bg-neutral-50/80 rounded-[32px] border border-black/10 p-6 sm:p-10 shadow-xl">
+          <div className="flex flex-wrap items-center justify-center gap-3 mb-10">
             {showcaseTabs.map((tab, idx) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(idx)}
-                className={`px-5 py-2.5 rounded-[14px] text-xs sm:text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                className={`px-5 py-3 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
                   activeTab === idx
                     ? 'bg-[#0084FF] text-white shadow-md scale-105'
-                    : 'bg-white/80 hover:bg-white text-black/70 hover:text-black border border-black/5'
+                    : 'bg-white text-black/70 hover:text-black border border-black/5'
                 }`}
               >
                 <span>{tab.title}</span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === idx ? 'bg-white/20 text-white' : 'bg-black/5 text-black/50'}`}>
+                  {tab.badge}
+                </span>
               </button>
             ))}
           </div>
 
-          {/* Tab Content */}
+          {/* Active Tab Card Content */}
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -192,30 +184,25 @@ export default function FeaturesSection({ onOpenTryModal }) {
             >
               {/* Left Details */}
               <div className="lg:col-span-5 flex flex-col justify-center">
-                <span className="px-3 py-1 rounded-full bg-[#0084FF]/10 text-[#0084FF] font-bold text-[11px] w-fit mb-3">
-                  {showcaseTabs[activeTab].badge}
-                </span>
-
-                <h3 className="font-outfit font-extrabold text-[26px] sm:text-[32px] text-black leading-tight mb-4 tracking-tight">
+                <h3 className="font-outfit font-extrabold text-[26px] sm:text-[32px] text-black leading-tight mb-3">
                   {showcaseTabs[activeTab].heading}
                 </h3>
-
                 <p className="font-sans text-[15px] text-black/60 leading-relaxed mb-6">
                   {showcaseTabs[activeTab].description}
                 </p>
 
-                <div className="flex flex-col gap-3 mb-8">
+                <ul className="space-y-3 mb-8">
                   {showcaseTabs[activeTab].highlights.map((h, i) => (
-                    <div key={i} className="flex items-center gap-3">
-                      <CheckCircle2 className="w-4 h-4 text-[#0084FF] shrink-0" />
-                      <span className="font-sans text-[14px] font-semibold text-black/80">{h}</span>
-                    </div>
+                    <li key={i} className="flex items-center gap-3 text-xs font-bold text-black/80">
+                      <CheckCircle2 className="w-4 h-4 text-[#0084FF]" />
+                      <span>{h}</span>
+                    </li>
                   ))}
-                </div>
+                </ul>
 
                 <button
                   onClick={onOpenTryModal}
-                  className="px-6 py-3 rounded-[14px] bg-black hover:bg-neutral-800 text-white font-bold text-sm w-fit flex items-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer"
+                  className="w-fit px-6 py-3.5 rounded-[16px] bg-black hover:bg-neutral-800 text-white text-xs font-bold flex items-center gap-2 shadow-md transition-all cursor-pointer"
                 >
                   <span>Test in Live Sandbox</span>
                   <ArrowRight className="w-4 h-4" />
@@ -230,7 +217,7 @@ export default function FeaturesSection({ onOpenTryModal }) {
                     <div className="w-3 h-3 rounded-full bg-yellow-400" />
                     <div className="w-3 h-3 rounded-full bg-green-400" />
                   </div>
-                  <span className="font-mono text-xs text-black/40">assist_engine_v3.4.2</span>
+                  <span className="font-mono text-xs text-black/40">revora_engine_v3.4.2</span>
                 </div>
 
                 {showcaseTabs[activeTab].previewType === 'chat' && (
@@ -285,7 +272,7 @@ export default function FeaturesSection({ onOpenTryModal }) {
                     <div className="flex items-center gap-3 p-3 bg-green-50/60 rounded-xl border border-green-100 text-xs">
                       <Zap className="w-5 h-5 text-green-600" />
                       <div className="flex-1">
-                        <span className="font-bold text-black">Action:</span> Assist auto-assigns lead dev & posts Slack briefing
+                        <span className="font-bold text-black">Action:</span> Revora auto-assigns lead dev & posts Slack briefing
                       </div>
                       <span className="text-[10px] font-mono bg-green-100 text-green-700 px-2 py-0.5 rounded">Completed</span>
                     </div>
@@ -295,7 +282,6 @@ export default function FeaturesSection({ onOpenTryModal }) {
             </motion.div>
           </AnimatePresence>
         </div>
-
       </div>
     </section>
   );

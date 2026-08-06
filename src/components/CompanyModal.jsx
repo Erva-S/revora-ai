@@ -33,7 +33,7 @@ export default function CompanyModal({ isOpen, onClose }) {
               </div>
               <div>
                 <h3 className="font-outfit font-bold text-[18px] text-black">
-                  About Assist Inc.
+                  About Revora Inc.
                 </h3>
                 <p className="font-sans text-[12px] text-black/50">
                   Building the next generation of corporate AI digital companions
@@ -60,7 +60,7 @@ export default function CompanyModal({ isOpen, onClose }) {
                 Empowering modern teams to eliminate routine friction through fluid, human-centric AI.
               </h4>
               <p className="text-sm text-black/60 mt-3 leading-relaxed">
-                Assist was founded with a single mission: to create responsive, liquid-glass AI interfaces that seamlessly integrate speech transcription, document summarization, and task execution into enterprise workflows.
+                Revora was founded with a single mission: to create responsive, liquid-glass AI interfaces that seamlessly integrate speech transcription, document summarization, and task execution into enterprise workflows.
               </p>
             </div>
 
@@ -109,7 +109,7 @@ export default function CompanyModal({ isOpen, onClose }) {
 
           {/* Footer */}
           <div className="px-6 py-4 bg-white border-t border-black/5 flex items-center justify-between">
-            <span className="text-xs text-black/50 font-sans">Assist Inc. • San Francisco & Global</span>
+            <span className="text-xs text-black/50 font-sans">Revora Inc. • San Francisco & Global</span>
             <button
               onClick={onClose}
               className="px-4 py-2 rounded-xl bg-black hover:bg-neutral-800 text-white font-bold text-xs cursor-pointer"

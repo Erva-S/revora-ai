@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
   const { loginAdmin, loginGoogle, loginDemoUser, error, setError } = useAuth();
   const [activeTab, setActiveTab] = useState('user'); // 'user' | 'admin'
-  const [adminEmail, setAdminEmail] = useState('admin@assist.ai');
+  const [adminEmail, setAdminEmail] = useState('admin@revora.ai');
   const [adminPassword, setAdminPassword] = useState('Admin@123');
   const [submitting, setSubmitting] = useState(false);
 
@@ -63,7 +63,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
                 <LogIn className="w-4 h-4" />
               </div>
               <h3 className="font-outfit font-bold text-[18px] text-black">
-                Assist Authentication
+                Revora Authentication
               </h3>
             </div>
             <button
@@ -117,9 +117,9 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
             {activeTab === 'user' && (
               <div className="space-y-5">
                 <div className="text-center py-2">
-                  <h4 className="font-outfit font-bold text-lg text-black">Sign in to Assist</h4>
+                  <h4 className="font-outfit font-bold text-lg text-black">Sign in to Revora</h4>
                   <p className="text-xs text-black/60 mt-1">
-                    Authenticate securely via Passport.js & Google OAuth2.0
+                    Authenticate securely via Supabase & Google OAuth2.0
                   </p>
                 </div>
 
@@ -147,13 +147,13 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
                     className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 text-[#0084FF] border border-sky-100 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Instant User Demo Login (alex.user@assist.ai)</span>
+                    <span>Instant User Demo Login (alex.user@revora.ai)</span>
                   </button>
                 </div>
               </div>
             )}
 
-            {/* TAB 2: ADMIN LOGIN (Passport Local Strategy) */}
+            {/* TAB 2: ADMIN LOGIN (Supabase Auth Strategy) */}
             {activeTab === 'admin' && (
               <form onSubmit={handleAdminSubmit} className="space-y-4">
                 <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-800 font-medium">
@@ -169,7 +169,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
                       required
                       value={adminEmail}
                       onChange={(e) => setAdminEmail(e.target.value)}
-                      placeholder="admin@assist.ai"
+                      placeholder="admin@revora.ai"
                       className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-neutral-100 border border-black/10 text-xs focus:outline-none focus:border-[#0084FF] focus:bg-white"
                     />
                   </div>

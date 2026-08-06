@@ -56,8 +56,21 @@ export default function Footer({ onOpenTryModal }) {
               Ultra-high-fidelity corporate AI digital companion. Streamlining emails, document summaries, and task automation.
             </p>
 
+            {/* College Affiliation Card */}
+            <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/95 border border-white/20 w-fit shadow-xs">
+              <img
+                src="/college-logo.png"
+                alt="CHARUSAT Logo"
+                className="h-8 w-auto object-contain"
+              />
+              <div className="text-left border-l border-neutral-300 pl-2.5">
+                <div className="text-[12px] font-bold text-neutral-900 leading-tight">CHARUSAT</div>
+                <div className="text-[9px] font-semibold text-neutral-600 leading-none mt-0.5">Charotar University of Science & Tech</div>
+              </div>
+            </div>
+
             {/* System Status indicator */}
-            <div className="flex items-center gap-2 mt-2 text-xs text-neutral-400">
+            <div className="flex items-center gap-2 mt-1 text-xs text-neutral-400">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
               <span>All Systems Operational (99.99% Uptime)</span>
             </div>

@@ -128,6 +128,23 @@ export default function HeroSection({ onOpenTryModal, onOpenFeatureModal }) {
             transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
             className="flex flex-col justify-center items-start text-left max-w-[560px] lg:col-span-4 z-10"
           >
+            {/* CHARUSAT College Affiliation Badge */}
+            <motion.div
+              whileHover={{ scale: 1.02 }}
+              className="mb-3.5 px-3.5 py-1.5 rounded-full bg-[#0084FF]/10 border border-[#0084FF]/25 flex items-center gap-2.5 shadow-2xs"
+            >
+              <div className="p-1 rounded-md bg-white shadow-2xs flex items-center">
+                <img
+                  src="/college-logo.png"
+                  alt="CHARUSAT - Charotar University of Science and Technology"
+                  className="h-5 w-auto object-contain"
+                />
+              </div>
+              <span className="font-sans text-[12px] font-bold text-[#0066CC] tracking-tight">
+                CHARUSAT <span className="font-normal text-black/60 hidden sm:inline">• Charotar University of Science & Technology</span>
+              </span>
+            </motion.div>
+
             {/* Social Proof Badge */}
             <motion.div
               whileHover={{ scale: 1.02 }}
@@ -153,7 +170,7 @@ export default function HeroSection({ onOpenTryModal, onOpenFeatureModal }) {
             {/* Display Title */}
             <h1 className="font-outfit font-black text-[40px] sm:text-[50px] lg:text-[62px] leading-[1.06] tracking-[-3px] mt-6 select-none text-black">
               Your All in One <br />
-              <span className="text-black">Assist.</span>
+              <span className="text-black">Revora.</span>
             </h1>
 
             {/* Body Paragraph */}
@@ -169,7 +186,7 @@ export default function HeroSection({ onOpenTryModal, onOpenFeatureModal }) {
                 whileTap={{ scale: 0.97 }}
                 className="pl-7 pr-3 py-3 rounded-full bg-[#0084FF] hover:bg-[#0074E0] text-white flex items-center gap-4 text-base font-bold transition-all w-fit shadow-xl shadow-primary-btn cursor-pointer group"
               >
-                <span>Try Assist. Free</span>
+                <span>Try Revora. Free</span>
                 <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center text-[#0084FF] group-hover:translate-x-0.5 transition-transform duration-200 shadow-xs">
                   <ChevronRight className="w-4.5 h-4.5 stroke-[3px]" />
                 </div>

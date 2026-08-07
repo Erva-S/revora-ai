@@ -22,7 +22,7 @@ export default function Footer({ onOpenTryModal }) {
         <div className="mb-16 p-8 sm:p-12 rounded-[28px] bg-gradient-to-r from-[#0084FF] to-[#0066CC] flex flex-col md:flex-row items-center justify-between gap-8 shadow-2xl relative overflow-hidden">
           <div className="relative z-10 max-w-[560px] text-center md:text-left">
             <h3 className="font-outfit font-black text-[28px] sm:text-[36px] text-white leading-tight">
-              Ready to transform how you work with Assist?
+              Ready to transform how you work with Revora?
             </h3>
             <p className="font-sans text-[15px] text-white/80 mt-2">
               Join 10,000+ teams automating communications and daily tasks today.
@@ -33,7 +33,7 @@ export default function Footer({ onOpenTryModal }) {
             onClick={onOpenTryModal}
             className="relative z-10 px-8 py-4 rounded-[18px] bg-white text-[#0084FF] font-bold text-base hover:bg-neutral-100 transition-all hover:scale-105 shadow-xl cursor-pointer shrink-0 flex items-center gap-3"
           >
-            <span>Try Assist. Free</span>
+            <span>Try Revora. Free</span>
             <ArrowRight className="w-4 h-4 stroke-[3px]" />
           </button>
 
@@ -49,15 +49,28 @@ export default function Footer({ onOpenTryModal }) {
               <div className="w-8 h-8 rounded-lg bg-[#0084FF] flex items-center justify-center text-white">
                 <Bot className="w-5 h-5" />
               </div>
-              <span>Assist.</span>
+              <span>Revora.</span>
             </div>
 
             <p className="font-sans text-[14px] text-neutral-400 max-w-[320px] leading-relaxed">
               Ultra-high-fidelity corporate AI digital companion. Streamlining emails, document summaries, and task automation.
             </p>
 
+            {/* College Affiliation Card */}
+            <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/95 border border-white/20 w-fit shadow-xs">
+              <img
+                src="/college-logo.png"
+                alt="CHARUSAT Logo"
+                className="h-8 w-auto object-contain"
+              />
+              <div className="text-left border-l border-neutral-300 pl-2.5">
+                <div className="text-[12px] font-bold text-neutral-900 leading-tight">CHARUSAT</div>
+                <div className="text-[9px] font-semibold text-neutral-600 leading-none mt-0.5">Charotar University of Science & Tech</div>
+              </div>
+            </div>
+
             {/* System Status indicator */}
-            <div className="flex items-center gap-2 mt-2 text-xs text-neutral-400">
+            <div className="flex items-center gap-2 mt-1 text-xs text-neutral-400">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
               <span>All Systems Operational (99.99% Uptime)</span>
             </div>
@@ -128,7 +141,7 @@ export default function Footer({ onOpenTryModal }) {
         {/* Bottom Copyright */}
         <div className="pt-8 flex flex-col sm:flex-row items-center justify-between text-xs text-neutral-500 font-sans gap-4">
           <div>
-            © {new Date().getFullYear()} Assist Inc. All rights reserved. Designed with ultra-high fidelity visual principles.
+            © {new Date().getFullYear()} Revora Inc. All rights reserved. Designed with ultra-high fidelity visual principles.
           </div>
 
           <div className="flex items-center gap-4">

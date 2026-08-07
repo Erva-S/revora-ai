@@ -116,7 +116,7 @@ function MainApp() {
         onOpenTryModal={() => handleOpenTryModal('')}
       />
 
-      {/* MODAL 1: Interactive Try Assist AI Playground Drawer */}
+      {/* MODAL 1: Interactive Try Revora AI Playground Drawer */}
       <TryAssistModal
         isOpen={isTryModalOpen}
         onClose={() => setIsTryModalOpen(false)}

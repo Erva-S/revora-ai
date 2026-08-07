@@ -33,7 +33,7 @@ export default function CompanyModal({ isOpen, onClose }) {
               </div>
               <div>
                 <h3 className="font-outfit font-bold text-[18px] text-black">
-                  About Assist Inc.
+                  About Revora Inc.
                 </h3>
                 <p className="font-sans text-[12px] text-black/50">
                   Building the next generation of corporate AI digital companions
@@ -51,6 +51,30 @@ export default function CompanyModal({ isOpen, onClose }) {
           {/* Modal Content */}
           <div className="flex-1 overflow-y-auto p-6 sm:p-8 space-y-8 font-sans">
             
+            {/* Academic Institution Partnership */}
+            <div className="p-4 rounded-[20px] bg-gradient-to-r from-sky-50 to-blue-50/50 border border-sky-200/80 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-white shadow-xs border border-sky-100 shrink-0">
+                  <img
+                    src="/college-logo.png"
+                    alt="CHARUSAT Logo"
+                    className="h-9 w-auto object-contain"
+                  />
+                </div>
+                <div>
+                  <h5 className="font-outfit font-bold text-sm text-neutral-900">
+                    CHARUSAT University Affiliated
+                  </h5>
+                  <p className="text-xs text-neutral-600 mt-0.5">
+                    Developed in collaboration with Charotar University of Science and Technology
+                  </p>
+                </div>
+              </div>
+              <span className="hidden sm:inline-block px-3 py-1 rounded-full bg-[#0084FF] text-white text-[11px] font-bold shrink-0">
+                Academic Partner
+              </span>
+            </div>
+
             {/* Mission Statement */}
             <div>
               <span className="px-3 py-1 rounded-full bg-[#0084FF]/10 text-[#0084FF] font-bold text-xs">
@@ -60,7 +84,7 @@ export default function CompanyModal({ isOpen, onClose }) {
                 Empowering modern teams to eliminate routine friction through fluid, human-centric AI.
               </h4>
               <p className="text-sm text-black/60 mt-3 leading-relaxed">
-                Assist was founded with a single mission: to create responsive, liquid-glass AI interfaces that seamlessly integrate speech transcription, document summarization, and task execution into enterprise workflows.
+                Revora was developed as an initiative at CHARUSAT to create responsive, liquid-glass AI interfaces that seamlessly integrate speech transcription, document summarization, and task execution into enterprise workflows.
               </p>
             </div>
 
@@ -109,7 +133,7 @@ export default function CompanyModal({ isOpen, onClose }) {
 
           {/* Footer */}
           <div className="px-6 py-4 bg-white border-t border-black/5 flex items-center justify-between">
-            <span className="text-xs text-black/50 font-sans">Assist Inc. • San Francisco & Global</span>
+            <span className="text-xs text-black/50 font-sans">Revora Inc. • San Francisco & Global</span>
             <button
               onClick={onClose}
               className="px-4 py-2 rounded-xl bg-black hover:bg-neutral-800 text-white font-bold text-xs cursor-pointer"

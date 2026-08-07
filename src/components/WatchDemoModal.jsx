@@ -32,7 +32,7 @@ export default function WatchDemoModal({ isOpen, onClose }) {
                 <Play className="w-4 h-4 fill-white ml-0.5" />
               </div>
               <h3 className="font-outfit font-bold text-[18px] text-white">
-                Assist AI — Product Overview & Demo
+                Revora AI — Product Overview & Demo
               </h3>
             </div>
             <button

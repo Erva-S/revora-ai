@@ -25,7 +25,7 @@ export default function InteractivePlaygroundSection({ onOpenTryModal }) {
       badge: 'Document Task',
       color: 'from-[#10B981] to-[#059669]',
       prompt: 'Summarize the 40-page Enterprise AI Productivity Benchmark Report into 3 executive bullet points.',
-      result: `Executive Summary Highlights:\n\n1. Enterprise teams using Assist saved an average of 14.2 hours per week on routine communication & document synthesis.\n2. Customer satisfaction scores (CSAT) reached 99.1% across all audited departments.\n3. Zero security incidents reported with neural end-to-end encryption.`,
+      result: `Executive Summary Highlights:\n\n1. Enterprise teams using Revora saved an average of 14.2 hours per week on routine communication & document synthesis.\n2. Customer satisfaction scores (CSAT) reached 99.1% across all audited departments.\n3. Zero security incidents reported with neural end-to-end encryption.`,
     },
     {
       id: 'todo',
@@ -66,10 +66,10 @@ export default function InteractivePlaygroundSection({ onOpenTryModal }) {
             Live In-Page Playground
           </span>
           <h2 className="font-outfit font-extrabold text-[32px] sm:text-[40px] text-black tracking-tight leading-tight">
-            See Assist in action. Test live workflows right here.
+            See Revora in action. Test live workflows right here.
           </h2>
           <p className="font-sans text-[16px] text-black/60 mt-3">
-            Select an automated task template below and watch Assist generate ultra-fast structured outputs.
+            Select an automated task template below and watch Revora generate ultra-fast structured outputs.
           </p>
         </div>
 
@@ -131,7 +131,7 @@ export default function InteractivePlaygroundSection({ onOpenTryModal }) {
                 ) : (
                   <>
                     <Play className="w-4 h-4 fill-white" />
-                    <span>Execute Task with Assist</span>
+                    <span>Execute Task with Revora</span>
                   </>
                 )}
               </button>

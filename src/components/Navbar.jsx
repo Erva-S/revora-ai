@@ -31,16 +31,30 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
         >
           <div className="flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6 py-1.5 h-full w-full">
             
-            {/* Brand Logo */}
-            <a
-              href="#home"
-              className="font-fustat font-extrabold text-[20px] sm:text-[22px] tracking-tight text-black flex items-center gap-2 group select-none"
-            >
-              <div className="w-7 h-7 rounded-lg bg-[#0084FF]/10 flex items-center justify-center group-hover:scale-105 transition-transform duration-200">
-                <Bot className="w-5 h-5 text-[#0084FF]" />
-              </div>
-              <span>Assist<span className="text-[#0084FF]">.</span></span>
-            </a>
+            {/* Brand Logo & College Logo */}
+            <div className="flex items-center gap-2.5">
+              <a
+                href="#home"
+                title="CHARUSAT - Charotar University of Science and Technology"
+                className="flex items-center gap-2 bg-white/80 px-2 py-1 rounded-xl border border-black/5 shadow-2xs hover:bg-white transition-all shrink-0"
+              >
+                <img
+                  src="/college-logo.png"
+                  alt="CHARUSAT - Charotar University of Science and Technology"
+                  className="h-7 sm:h-8 w-auto object-contain shrink-0"
+                />
+              </a>
+              <div className="h-5 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
+              <a
+                href="#home"
+                className="font-fustat font-extrabold text-[20px] sm:text-[22px] tracking-tight text-black flex items-center gap-2 group select-none"
+              >
+                <div className="w-7 h-7 rounded-lg bg-[#0084FF]/10 flex items-center justify-center group-hover:scale-105 transition-transform duration-200">
+                  <Bot className="w-5 h-5 text-[#0084FF]" />
+                </div>
+                <span>Revora<span className="text-[#0084FF]">.</span></span>
+              </a>
+            </div>
 
             {/* Desktop Navigation Links */}
             <nav className="hidden md:flex items-center gap-8">
@@ -132,9 +146,19 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
             >
               <div>
                 <div className="flex items-center justify-between pb-6 border-b border-black/10">
-                  <div className="font-fustat font-extrabold text-[20px] tracking-tight text-black flex items-center gap-2">
-                    <Bot className="w-5 h-5 text-[#0084FF]" />
-                    <span>Assist.</span>
+                  <div className="flex items-center gap-2">
+                    <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs">
+                      <img
+                        src="/college-logo.png"
+                        alt="CHARUSAT - Charotar University of Science and Technology"
+                        className="h-6 w-auto object-contain"
+                      />
+                    </div>
+                    <div className="h-4 w-[1px] bg-black/15" />
+                    <div className="font-fustat font-extrabold text-[17px] tracking-tight text-black flex items-center gap-1.5">
+                      <Bot className="w-4 h-4 text-[#0084FF]" />
+                      <span>Revora.</span>
+                    </div>
                   </div>
                   <button onClick={() => setMobileMenuOpen(false)} className="p-1 rounded-lg text-black/60">
                     <X className="w-5 h-5" />

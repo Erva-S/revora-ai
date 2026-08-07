@@ -7,6 +7,7 @@ const sequelize = require('./db');
 const User = require('./models/User');
 const passport = require('./config/passport');
 const authRoutes = require('./routes/auth');
+const briefingRoutes = require('./routes/briefings');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -52,6 +53,7 @@ app.get('/api/health', (req, res) => {
     session: req.isAuthenticated() ? 'Active' : 'Guest',
   });
 });
+app.use('/api/meetings', briefingRoutes);
 
 // Sync Database and Seed Admin User
 async function startServer() {

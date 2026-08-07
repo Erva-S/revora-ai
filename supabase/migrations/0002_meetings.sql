@@ -5,7 +5,22 @@
 
 
 -- --------------------------------------------------------------------
--- 0. FIX: infinite recursion in existing profiles admin policies
+-- 0. Ensure public.profiles table exists
+-- --------------------------------------------------------------------
+create table if not exists public.profiles (
+  id uuid references auth.users on delete cascade primary key,
+  email text not null,
+  full_name text,
+  avatar_url text,
+  role text default 'user' check (role in ('user', 'admin')),
+  updated_at timestamp with time zone default timezone('utc'::text, now()),
+  created_at timestamp with time zone default timezone('utc'::text, now())
+);
+
+alter table public.profiles enable row level security;
+
+-- --------------------------------------------------------------------
+-- 1. FIX: infinite recursion in existing profiles admin policies
 --
 -- The policies created in schema.sql check admin status with a
 -- subquery against public.profiles ITSELF. Because that subquery is

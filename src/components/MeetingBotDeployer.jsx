@@ -42,17 +42,24 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
       });
 
       if (funcError) {
-        console.warn('Edge Function notice:', funcError);
+        throw new Error(funcError.message || 'Edge Function execution failed.');
       }
 
-      const botId = data?.bot_id || data?.id || `bot_baas_${Math.random().toString(36).substring(2, 9)}`;
+      if (data?.error) {
+        throw new Error(data.error);
+      }
+
+      const botId = data?.bot_id || data?.id;
+      if (!botId) {
+        throw new Error('Server returned an invalid bot response (missing bot_id).');
+      }
 
       const newBotState = {
         botId,
         status: 'joining',
         meetingUrl: meetingUrl.trim(),
-        botName: 'Revora Assistant',
-        recordingMode: 'speaker_view',
+        botName: data?.bot_name || 'Revora Assistant',
+        recordingMode: data?.recording_mode || 'speaker_view',
         deployedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 
@@ -62,15 +69,7 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
       }
     } catch (err) {
       console.error('Failed to deploy MeetingBaaS bot:', err);
-      const fallbackBotId = `bot_baas_${Math.random().toString(36).substring(2, 9)}`;
-      setBotStatus({
-        botId: fallbackBotId,
-        status: 'joining',
-        meetingUrl: meetingUrl.trim(),
-        botName: 'Revora Assistant',
-        recordingMode: 'speaker_view',
-        deployedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      });
+      setError(err.message || 'Failed to deploy meeting bot. Please check your connection and configuration.');
     } finally {
       setLoading(false);
     }

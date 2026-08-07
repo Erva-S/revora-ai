@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, User, Calendar, Clock, ArrowLeft, RefreshCw, Shield, ChevronRight } from 'lucide-react';
+import BriefingCard from '../components/BriefingCard';
+import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
   const { user, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState('overview');
   const [micActive, setMicActive] = useState(false);
 
   const sampleTranscripts = [
@@ -101,6 +101,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
           {/* Backdrop ambient blur circle */}
           <div className="absolute -right-12 -bottom-12 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
         </div>
+
+        {/* Live Pre-Meeting Briefing Feed */}
+        <section>
+          <BriefingCard meetingId={1} />
+        </section>
 
         {/* Quick Tools Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

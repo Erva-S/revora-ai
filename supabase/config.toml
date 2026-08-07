@@ -1,0 +1,9 @@
+[functions.deploy-bot]
+# Called from the browser by a signed-in user — the JWT is what gives us
+# the user_id we attach to the meetings row.
+verify_jwt = true
+
+[functions.meetingbaas-webhook]
+# MeetingBaaS cannot present a Supabase JWT. This endpoint authenticates
+# with MEETINGBAAS_WEBHOOK_SECRET instead (see the function source).
+verify_jwt = false

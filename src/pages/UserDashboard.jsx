@@ -3,8 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
-import TaskExtractorModal from '../components/TaskExtractorModal';
-import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, Clock } from 'lucide-react';
+import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
@@ -13,7 +12,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
   const [meetingsList, setMeetingsList] = useState([]);
   const [loadingMeetings, setLoadingMeetings] = useState(true);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
-  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
   // Fetch real meetings from Supabase Postgres database
   const fetchMeetings = async () => {
@@ -211,11 +209,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
               </p>
             </div>
             <button
-              onClick={() => setIsTaskModalOpen(true)}
+              onClick={onOpenTryModal}
               className="mt-6 py-2.5 px-4 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
               <CheckSquare className="w-3.5 h-3.5" />
-              <span>Extract Action Items</span>
+              <span>View Action Items</span>
             </button>
           </div>
 
@@ -381,12 +379,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
         )}
 
       </main>
-
-      {/* Task Extractor Modal */}
-      <TaskExtractorModal
-        isOpen={isTaskModalOpen}
-        onClose={() => setIsTaskModalOpen(false)}
-      />
     </div>
   );
 }

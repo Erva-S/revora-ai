@@ -6,8 +6,13 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@google/genai": "^2.16.0",
+    "@google/generative-ai": "^0.24.1",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.5",
     "sequelize": "^6.37.8",
     "sqlite3": "^6.0.1"
   }

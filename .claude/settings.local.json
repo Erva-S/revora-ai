@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:/Users/ADMIN/OneDrive/Desktop/futurrizon-claude\" status)",
+      "WebFetch(domain:docs.meetingbaas.com)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebSearch"
+    ]
+  }
+}

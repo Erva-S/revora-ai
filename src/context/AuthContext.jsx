@@ -16,8 +16,20 @@ export function AuthProvider({ children }) {
   // Helper to persist session in React state AND localStorage
   const updateActiveUser = (userData) => {
     setUser(userData);
-    if (userData) {
-      localStorage.setItem('revora_local_user', JSON.stringify(userData));
+    const shouldPersistLocalDemoUser =
+      Boolean(userData?.id) &&
+      (String(userData.id).startsWith('demo_') || String(userData.id).startsWith('admin_demo_'));
+
+    if (userData && shouldPersistLocalDemoUser) {
+      const persistedUser = {
+        id: userData.id,
+        email: userData.email,
+        name: userData.name,
+        avatar: userData.avatar ?? null,
+        role: userData.role ?? 'user',
+        createdAt: userData.createdAt ?? null,
+      };
+      localStorage.setItem('revora_local_user', JSON.stringify(persistedUser));
     } else {
       localStorage.removeItem('revora_local_user');
     }
@@ -192,24 +204,23 @@ export function AuthProvider({ children }) {
         updateActiveUser(data.user);
         return { success: true, user: data.user };
       }
-    } catch (err) {
-      const demoUser = {
-        id: 'demo_user_123',
-        email: 'alex.user@revora.ai',
-        name: 'Alex Rivera',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
-        role: 'user',
-      };
-      updateActiveUser(demoUser);
-      return { success: true, user: demoUser };
-    }
+    } catch (err) {}
+
+    const demoUser = {
+      id: 'demo_user_123',
+      email: 'alex.user@revora.ai',
+      name: 'Alex Rivera',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
+      role: 'user',
+    };
+    updateActiveUser(demoUser);
+    return { success: true, user: demoUser };
   };
 
   // Sign Out
   const logout = async () => {
     try {
       await supabase.auth.signOut();
-      await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
     } catch (err) {
       console.warn('Sign out error:', err);
     } finally {

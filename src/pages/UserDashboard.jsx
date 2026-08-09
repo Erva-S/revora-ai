@@ -1,20 +1,62 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
+import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import TaskExtractorModal from '../components/TaskExtractorModal';
-import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft } from 'lucide-react';
+import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, Clock } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
   const { user, logout } = useAuth();
   const [micActive, setMicActive] = useState(false);
+  const [meetingsList, setMeetingsList] = useState([]);
+  const [loadingMeetings, setLoadingMeetings] = useState(true);
+  const [selectedMeeting, setSelectedMeeting] = useState(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
-  const sampleTranscripts = [
-    { id: 1, title: 'Q3 Front-End Architecture Review', date: 'Today, 2:30 PM', duration: '34 mins', summary: 'Approved liquid glass UI components and sub-50ms streaming targets.' },
-    { id: 2, title: 'Sprint Backlog & Task Estimation', date: 'Yesterday, 11:00 AM', duration: '45 mins', summary: 'Assigned top engineering tasks and verified database SQLite sync.' },
-    { id: 3, title: 'Product Design System Alignment', date: 'Aug 2, 2026', duration: '20 mins', summary: 'Standardized typography across Outfit, Fustat, and Inter fonts.' },
-  ];
+  // Fetch real meetings from Supabase Postgres database
+  const fetchMeetings = async () => {
+    try {
+      setLoadingMeetings(true);
+      const { data, error } = await supabase
+        .from('meetings')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setMeetingsList(data);
+      }
+    } catch (err) {
+      console.warn('Meetings query notice:', err);
+    } finally {
+      setLoadingMeetings(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMeetings();
+
+    let channel = null;
+    try {
+      channel = supabase
+        .channel('meetings_realtime_feed')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => {
+          fetchMeetings();
+        })
+        .subscribe();
+    } catch (realtimeErr) {
+      console.warn('Realtime subscription notice:', realtimeErr);
+    }
+
+    return () => {
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch (_) {}
+      }
+    };
+  }, []);
 
   const handleTestMic = () => {
     setMicActive(!micActive);
@@ -104,6 +146,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
           <div className="absolute -right-12 -bottom-12 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
         </div>
 
+        {/* Meeting Bot Deployer Component */}
+        <MeetingBotDeployer />
+
         {/* Live Pre-Meeting Briefing Feed */}
         <section>
           <BriefingCard meetingId={1} />
@@ -176,39 +221,164 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
 
         </div>
 
-        {/* Transcripts History */}
+        {/* Real-time Transcripts & AI Summaries Feed */}
         <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs space-y-4">
           <div className="flex items-center justify-between pb-4 border-b border-black/5">
             <div>
-              <h3 className="font-outfit font-bold text-lg text-black">Recent Meeting Transcripts</h3>
-              <p className="text-xs text-black/50">Access past meeting recordings and AI-generated insights</p>
+              <h3 className="font-outfit font-bold text-lg text-black">Live Meeting Summaries & Transcripts</h3>
+              <p className="text-xs text-black/50">Real-time feed connected to Supabase & MeetingBaaS</p>
             </div>
-            <span className="px-3 py-1 rounded-full bg-black/5 text-xs font-bold text-black/70">
-              3 Transcripts
-            </span>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchMeetings}
+                disabled={loadingMeetings}
+                className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingMeetings ? 'animate-spin' : ''}`} />
+                <span>Refresh Feed</span>
+              </button>
+              <span className="px-3 py-1 rounded-full bg-sky-100 text-[#0084FF] text-xs font-bold font-mono">
+                {meetingsList.length} Meetings Recorded
+              </span>
+            </div>
           </div>
 
           <div className="space-y-3">
-            {sampleTranscripts.map((t) => (
-              <div key={t.id} className="p-4 rounded-2xl bg-neutral-50 hover:bg-sky-50/50 border border-black/5 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <h4 className="font-bold text-sm text-black flex items-center gap-2">
-                    {t.title}
-                    <span className="text-[10px] font-mono font-normal text-black/40">({t.duration})</span>
-                  </h4>
-                  <p className="text-xs text-black/60">{t.summary}</p>
-                </div>
+            {meetingsList.length > 0 ? (
+              meetingsList.map((m) => (
+                <div
+                  key={m.id}
+                  className="p-5 rounded-2xl bg-neutral-50 hover:bg-sky-50/50 border border-black/5 transition-all space-y-3"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-black/5">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-bold text-sm text-black">
+                          {m.title || 'Live Video Meeting'}
+                        </h4>
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono border ${
+                          m.status === 'summarized' || m.status === 'completed'
+                            ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
+                            : m.status === 'recording' || m.status === 'pending'
+                            ? 'bg-sky-100 text-[#0084FF] border-sky-300 animate-pulse'
+                            : 'bg-red-100 text-red-700 border-red-300'
+                        }`}>
+                          {m.status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-black/50 font-mono">
+                        Bot ID: <span className="font-bold text-black/70">{m.bot_id}</span> • {m.meeting_url}
+                      </p>
+                    </div>
 
-                <div className="flex items-center gap-3 text-xs shrink-0">
-                  <span className="text-black/40 font-mono">{t.date}</span>
-                  <button onClick={onOpenTryModal} className="px-3 py-1.5 rounded-xl bg-white border border-black/10 font-bold text-[#0084FF] hover:underline cursor-pointer">
-                    Open Transcript →
-                  </button>
+                    <div className="flex items-center gap-3 text-xs shrink-0">
+                      <span className="text-black/40 font-mono">
+                        {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <button
+                        onClick={() => setSelectedMeeting(m)}
+                        className="px-3.5 py-1.5 rounded-xl bg-white border border-black/10 font-bold text-[#0084FF] hover:bg-sky-50 transition-colors cursor-pointer"
+                      >
+                        View AI Summary & Tasks →
+                      </button>
+                    </div>
+                  </div>
+
+                  {m.summary && (
+                    <div className="p-3.5 rounded-xl bg-white border border-black/5 text-xs text-black/80 leading-relaxed">
+                      <strong className="text-[#0084FF] font-bold">Executive Summary: </strong>
+                      {m.summary}
+                    </div>
+                  )}
+
+                  {Array.isArray(m.action_items) && m.action_items.length > 0 && (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {m.action_items.map((item, idx) => (
+                        <span
+                          key={idx}
+                          className="px-3 py-1 rounded-lg bg-purple-50 text-purple-700 border border-purple-100 text-[11px] font-semibold flex items-center gap-1.5"
+                        >
+                          <CheckSquare className="w-3 h-3 text-purple-500" />
+                          <span>{typeof item === 'string' ? item : item.task || JSON.stringify(item)}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
+              ))
+            ) : (
+              /* Fallback structured sample list if database has no rows yet */
+              <div className="p-6 rounded-2xl bg-neutral-50 text-center space-y-2">
+                <Clock className="w-8 h-8 text-[#0084FF] mx-auto animate-pulse" />
+                <h4 className="font-outfit font-bold text-base text-black">Awaiting Your First Meeting Bot</h4>
+                <p className="text-xs text-black/60 max-w-[480px] mx-auto leading-relaxed">
+                  Enter a Google Meet, Zoom, or Teams URL above and click <strong>Deploy Bot</strong>. As soon as the call ends, your Gemini AI summary will land right here automatically!
+                </p>
               </div>
-            ))}
+            )}
           </div>
         </div>
+
+        {/* Selected Meeting Details Modal */}
+        {selectedMeeting && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+            <div className="bg-white rounded-[28px] max-w-[640px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[85vh] overflow-y-auto">
+              <div className="flex items-center justify-between pb-4 border-b border-black/5">
+                <div>
+                  <h3 className="font-outfit font-bold text-xl text-black">
+                    {selectedMeeting.title || 'Meeting Summary & AI Insights'}
+                  </h3>
+                  <p className="text-xs text-black/50 font-mono mt-0.5">
+                    Bot ID: {selectedMeeting.bot_id} • {selectedMeeting.meeting_url}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSelectedMeeting(null)}
+                  className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+
+              {selectedMeeting.summary && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Executive Summary</h4>
+                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
+                    {selectedMeeting.summary}
+                  </div>
+                </div>
+              )}
+
+              {selectedMeeting.transcript && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
+                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto">
+                    {selectedMeeting.transcript}
+                  </div>
+                </div>
+              )}
+
+              {Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Assigned Action Items</h4>
+                  <div className="space-y-2">
+                    {selectedMeeting.action_items.map((item, idx) => (
+                      <div key={idx} className="p-3 rounded-xl bg-purple-50 border border-purple-100 text-xs text-purple-900 font-medium flex items-center justify-between">
+                        <span>{typeof item === 'string' ? item : item.task || JSON.stringify(item)}</span>
+                        {item.assignee && (
+                          <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-700 font-bold text-[10px]">
+                            {item.assignee}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
       </main>
 

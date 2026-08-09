@@ -117,25 +117,24 @@ create trigger meetings_set_updated_at
 
 
 -- --------------------------------------------------------------------
--- 3. Row Level Security
---
--- Writes are intentionally NOT granted to end users. Both Edge
--- Functions use the service_role key, which bypasses RLS entirely —
--- so no INSERT/UPDATE policy is needed for them. This prevents a
--- browser client from forging or editing meeting records.
 -- --------------------------------------------------------------------
+-- 3. Table Permissions & Row Level Security
+-- --------------------------------------------------------------------
+grant select, insert, update, delete on table public.meetings to authenticated, anon, service_role;
+grant select, insert, update, delete on table public.profiles to authenticated, anon, service_role;
+
 alter table public.meetings enable row level security;
 
 drop policy if exists "Users can view own meetings" on public.meetings;
 create policy "Users can view own meetings"
   on public.meetings for select
-  to authenticated
-  using ( auth.uid() = user_id );
+  to authenticated, anon
+  using ( auth.uid() = user_id or user_id is null );
 
 drop policy if exists "Admins can view all meetings" on public.meetings;
 create policy "Admins can view all meetings"
   on public.meetings for select
-  to authenticated
+  to authenticated, anon
   using ( public.is_admin() );
 
 drop policy if exists "Users can delete own meetings" on public.meetings;

@@ -16,42 +16,32 @@ export default function AdminDashboard({ onNavigateHome }) {
   const [scheduledAt, setScheduledAt] = useState(''); // State for scheduled date & time
   const [creatingMeeting, setCreatingMeeting] = useState(false);
 
-  // Fetch users list from Supabase or Express backend
+  // Fetch users list directly from Supabase profiles table
   const fetchUsers = async () => {
     try {
       setLoadingUsers(true);
-      // Try querying Supabase profiles table first
       const { data: profiles, error } = await supabase
         .from('profiles')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (profiles && profiles.length > 0 && !error) {
+      if (error) throw error;
+
+      if (profiles) {
         setUsersList(
           profiles.map((p) => ({
             id: p.id,
             email: p.email,
-            name: p.full_name || 'User',
+            name: p.full_name || p.email?.split('@')[0] || 'User',
             role: p.role || 'user',
             avatar: p.avatar_url,
             googleId: null,
             createdAt: p.created_at,
           }))
         );
-        setLoadingUsers(false);
-        return;
-      }
-
-      // Fallback to Express backend /api/users endpoint
-      const res = await fetch('/api/users', {
-        headers: { 'Accept': 'application/json' },
-      });
-      const data = await res.json();
-      if (data.success && data.users) {
-        setUsersList(data.users);
       }
     } catch (err) {
-      console.error('Failed to fetch users list:', err);
+      console.error('Failed to fetch users list from Supabase:', err);
     } finally {
       setLoadingUsers(false);
     }
@@ -111,43 +101,43 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
-  // Toggle user role
+  // Toggle user role in Supabase profiles
   const handleToggleRole = async (targetUserId, currentRole) => {
     const newRole = currentRole === 'admin' ? 'user' : 'admin';
     try {
-      const res = await fetch(`/api/users/${targetUserId}/role`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: newRole }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setActionMessage(`User role updated to "${newRole.toUpperCase()}"`);
-        fetchUsers();
-        setTimeout(() => setActionMessage(null), 3000);
-      } else {
-        alert(data.message || 'Role update failed');
-      }
+      const { error } = await supabase
+        .from('profiles')
+        .update({ role: newRole })
+        .eq('id', targetUserId);
+
+      if (error) throw error;
+
+      setActionMessage(`User role updated to "${newRole.toUpperCase()}"`);
+      fetchUsers();
+      setTimeout(() => setActionMessage(null), 3000);
     } catch (err) {
-      alert('Failed to update role');
+      console.error('Failed to update role:', err);
+      alert(err.message || 'Failed to update user role');
     }
   };
 
-  // Delete user
+  // Delete user profile from Supabase
   const handleDeleteUser = async (targetUserId) => {
-    if (!window.confirm('Are you sure you want to delete this user account?')) return;
+    if (!window.confirm('Are you sure you want to delete this user profile?')) return;
     try {
-      const res = await fetch(`/api/users/${targetUserId}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (data.success) {
-        setActionMessage('User account deleted successfully');
-        fetchUsers();
-        setTimeout(() => setActionMessage(null), 3000);
-      } else {
-        alert(data.message || 'Failed to delete user');
-      }
+      const { error } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', targetUserId);
+
+      if (error) throw error;
+
+      setActionMessage('User profile deleted successfully');
+      fetchUsers();
+      setTimeout(() => setActionMessage(null), 3000);
     } catch (err) {
-      alert('Delete request failed');
+      console.error('Failed to delete user profile:', err);
+      alert(err.message || 'Failed to delete user profile');
     }
   };
 
@@ -208,7 +198,7 @@ export default function AdminDashboard({ onNavigateHome }) {
             </div>
             <span>Admin Control Center</span>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase">
-              Passport.js & SQLite
+              Supabase Auth & DB
             </span>
           </div>
         </div>
@@ -265,8 +255,8 @@ export default function AdminDashboard({ onNavigateHome }) {
               <span>DATABASE ENGINE</span>
               <Database className="w-4 h-4 text-emerald-400" />
             </div>
-            <div className="font-outfit font-bold text-xl text-white">SQLite 3</div>
-            <div className="text-[11px] text-emerald-400 mt-1 font-mono">Sequelize ORM Connected</div>
+            <div className="font-outfit font-bold text-xl text-white">Supabase DB</div>
+            <div className="text-[11px] text-emerald-400 mt-1 font-mono">PostgreSQL Connected</div>
           </div>
 
           <div className="p-5 rounded-[22px] bg-neutral-800/80 border border-neutral-700 shadow-md">
@@ -274,8 +264,8 @@ export default function AdminDashboard({ onNavigateHome }) {
               <span>SESSION SECURITY</span>
               <Lock className="w-4 h-4 text-purple-400" />
             </div>
-            <div className="font-outfit font-bold text-xl text-white">Express Session</div>
-            <div className="text-[11px] text-purple-400 mt-1 font-mono">Cookie-Based Auth</div>
+            <div className="font-outfit font-bold text-xl text-white">Supabase Auth</div>
+            <div className="text-[11px] text-purple-400 mt-1 font-mono">JWT & OAuth Security</div>
           </div>
         </div>
 

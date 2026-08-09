@@ -155,29 +155,21 @@ export function AuthProvider({ children }) {
   // Quick Demo User Login
   const loginDemoUser = async () => {
     setError(null);
-    try {
-      const res = await fetch('/auth/demo-user-login', { method: 'POST' });
-      const data = await res.json();
-      if (data.success && data.user) {
-        setUser(data.user);
-        return { success: true, user: data.user };
-      }
-    } catch (err) {
-      setUser({
-        id: 'demo_user_123',
-        email: 'alex.user@revora.ai',
-        name: 'Alex Rivera',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
-        role: 'user',
-      });
-    }
+    const demoUserObj = {
+      id: 'demo_user_123',
+      email: 'alex.user@revora.ai',
+      name: 'Alex Rivera',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
+      role: 'user',
+    };
+    setUser(demoUserObj);
+    return { success: true, user: demoUserObj };
   };
 
   // Sign Out
   const logout = async () => {
     try {
       await supabase.auth.signOut();
-      await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
     } catch (err) {
       console.warn('Sign out error:', err);
     } finally {

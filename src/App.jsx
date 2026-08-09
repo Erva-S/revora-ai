@@ -37,9 +37,14 @@ function MainApp() {
     setIsFeatureModalOpen(true);
   };
 
-  const handleNavigateDashboard = () => {
+  const handleNavigateDashboard = async () => {
     if (!user) {
-      setIsLoginModalOpen(true);
+      const res = await loginDemoUser();
+      if (res?.user?.role === 'admin') {
+        setCurrentView('admin-dashboard');
+      } else {
+        setCurrentView('dashboard');
+      }
       return;
     }
     if (user.role === 'admin') {

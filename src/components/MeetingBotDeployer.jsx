@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Bot, Video, ArrowRight, Loader2, CheckCircle2, AlertCircle, Sparkles, RefreshCw, Zap } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 
@@ -7,6 +7,51 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [botStatus, setBotStatus] = useState(null); // null | { botId, status, meetingUrl, deployedAt }
+
+  useEffect(() => {
+    if (!botStatus?.botId) return undefined;
+
+    let cancelled = false;
+
+    const syncBotState = async () => {
+      try {
+        const { data, error: syncError } = await supabase
+          .from('meetings')
+          .select('status,error_message,summary,ended_at,updated_at')
+          .eq('bot_id', botStatus.botId)
+          .maybeSingle();
+
+        if (cancelled || syncError || !data) return;
+
+        setBotStatus((current) => {
+          if (!current || current.botId !== botStatus.botId) return current;
+          const nextStatus = data.status || current.status;
+          return {
+            ...current,
+            status: nextStatus,
+            errorMessage: data.error_message || null,
+            summary: data.summary || current.summary || null,
+            endedAt: data.ended_at || current.endedAt || null,
+            updatedAt: data.updated_at || current.updatedAt || null,
+          };
+        });
+
+        if (data.status === 'failed' && data.error_message) {
+          setError(data.error_message);
+        }
+      } catch (syncErr) {
+        console.warn('Meeting status sync notice:', syncErr);
+      }
+    };
+
+    syncBotState();
+    const intervalId = setInterval(syncBotState, 5000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [botStatus?.botId]);
 
   const detectPlatform = (url) => {
     if (!url) return null;
@@ -41,12 +86,17 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
         body: { meetingUrl: meetingUrl.trim() },
       });
 
-      if (funcError) {
-        throw new Error(funcError.message || 'Edge Function execution failed.');
+      if (data?.success === false || data?.error) {
+        throw new Error(data.error || 'Failed to dispatch bot.');
       }
 
-      if (data?.error) {
-        throw new Error(data.error);
+      if (funcError) {
+        let detail = funcError.message;
+        try {
+          const errCtx = await funcError.context?.json();
+          if (errCtx?.error) detail = errCtx.error;
+        } catch (_) {}
+        throw new Error(detail || 'Edge Function execution failed.');
       }
 
       const botId = data?.bot_id || data?.id;
@@ -56,11 +106,15 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
 
       const newBotState = {
         botId,
-        status: 'joining',
+        status: data?.status || 'pending',
         meetingUrl: meetingUrl.trim(),
         botName: data?.bot_name || 'Revora Assistant',
         recordingMode: data?.recording_mode || 'speaker_view',
         deployedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        errorMessage: null,
+        summary: null,
+        endedAt: null,
+        updatedAt: null,
       };
 
       setBotStatus(newBotState);
@@ -79,6 +133,22 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
     setBotStatus(null);
     setMeetingUrl('');
     setError(null);
+  };
+
+  const handleEjectBot = async () => {
+    if (!botStatus?.botId) return;
+    try {
+      setLoading(true);
+      await supabase.functions.invoke(`deploy-bot?bot_id=${botStatus.botId}`, {
+        method: 'DELETE',
+      });
+      setBotStatus(null);
+    } catch (ejectErr) {
+      console.warn('Eject bot notice:', ejectErr);
+      setBotStatus(null);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -201,10 +271,10 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                 <div>
                   <div className="flex items-center gap-2">
                     <h4 className="font-outfit font-black text-lg text-black">
-                      Revora Assistant is Joining Call
+                      Revora Assistant Dispatch Status
                     </h4>
-                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-300">
-                      Live Active
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 text-[#0084FF] border border-sky-300 capitalize">
+                        {botStatus.status}
                     </span>
                   </div>
                   <p className="text-xs text-black/60 font-mono mt-0.5">
@@ -214,12 +284,36 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
               </div>
 
               <div className="flex items-center gap-2">
-                <div className="px-3.5 py-1.5 rounded-xl bg-white/90 border border-sky-200 text-xs font-semibold text-sky-800 flex items-center gap-1.5 shadow-2xs">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                  <span>MeetingBaaS Bot Dispatched</span>
+                <div className={`px-3 py-1.5 rounded-xl bg-white/90 border text-xs font-semibold flex items-center gap-1.5 shadow-2xs ${botStatus.status === 'failed' ? 'border-red-200 text-red-700' : 'border-sky-200 text-sky-800'}`}>
+                  <CheckCircle2 className={`w-4 h-4 ${botStatus.status === 'failed' ? 'text-red-500' : 'text-emerald-500'}`} />
+                  <span>
+                    {botStatus.status === 'recording'
+                      ? 'Recording'
+                      : botStatus.status === 'summarized' || botStatus.status === 'completed'
+                      ? 'Completed'
+                      : botStatus.status === 'failed'
+                      ? 'Failed'
+                      : 'Dispatched'}
+                  </span>
                 </div>
+
+                <button
+                  onClick={handleEjectBot}
+                  disabled={loading}
+                  className="px-3.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>Force Bot to Leave Call</span>
+                </button>
               </div>
             </div>
+
+            {botStatus.errorMessage && (
+              <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{botStatus.errorMessage}</span>
+              </div>
+            )}
 
             {/* Meeting Details Card */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
@@ -250,7 +344,7 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                 </div>
                 <div className="py-1.5 px-2 rounded-lg bg-sky-100 text-[#0084FF] font-bold border border-sky-300 flex items-center justify-center gap-1 animate-pulse">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>2. Speaker View Rec</span>
+                  <span>2. Awaiting Join Confirmation</span>
                 </div>
                 <div className="py-1.5 px-2 rounded-lg bg-neutral-100 text-black/50 border border-neutral-200">
                   <span>3. Gemini 3.5 Flash</span>

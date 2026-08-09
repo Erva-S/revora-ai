@@ -4,10 +4,24 @@ import { supabase } from '../supabaseClient';
 const AuthContext = createContext();
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  // 1. Check localStorage first so local demo sessions survive page refreshes
+  const [user, setUser] = useState(() => {
+    const saved = localStorage.getItem('revora_local_user');
+    return saved ? JSON.parse(saved) : null;
+  });
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Helper to persist session in React state AND localStorage
+  const updateActiveUser = (userData) => {
+    setUser(userData);
+    if (userData) {
+      localStorage.setItem('revora_local_user', JSON.stringify(userData));
+    } else {
+      localStorage.removeItem('revora_local_user');
+    }
+  };
 
   // Helper to fetch user profile from Supabase profiles table
   const fetchUserProfile = async (authUser) => {
@@ -57,9 +71,7 @@ export function AuthProvider({ children }) {
           setSession(initialSession);
           if (initialSession?.user) {
             const userProfile = await fetchUserProfile(initialSession.user);
-            setUser(userProfile);
-          } else {
-            setUser(null);
+            updateActiveUser(userProfile);
           }
           setLoading(false);
         }
@@ -76,9 +88,13 @@ export function AuthProvider({ children }) {
       setSession(currentSession);
       if (currentSession?.user) {
         const userProfile = await fetchUserProfile(currentSession.user);
-        setUser(userProfile);
+        updateActiveUser(userProfile);
       } else {
-        setUser(null);
+        // Only clear if no local demo user is saved
+        const localSaved = localStorage.getItem('revora_local_user');
+        if (!localSaved) {
+          updateActiveUser(null);
+        }
       }
       setLoading(false);
     });
@@ -95,7 +111,6 @@ export function AuthProvider({ children }) {
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const isConfigured = supabaseUrl && !supabaseUrl.includes('placeholder-project-id');
 
-    // If real Supabase credentials are not set in .env yet, fallback to instant user login
     if (!isConfigured) {
       return await loginDemoUser();
     }
@@ -121,6 +136,21 @@ export function AuthProvider({ children }) {
   const loginAdmin = async (email, password) => {
     setError(null);
     const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Check local demo admin credentials
+    if (cleanEmail === 'admin@revora.ai' && password === 'admin123') {
+      const demoAdmin = {
+        id: 'admin_demo_999',
+        email: 'admin@revora.ai',
+        name: 'Revora Executive Admin',
+        role: 'admin',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
+      };
+      updateActiveUser(demoAdmin);
+      return { success: true, user: demoAdmin };
+    }
+
+    // 2. Fallback to Supabase authentication check
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
@@ -143,7 +173,7 @@ export function AuthProvider({ children }) {
       }
 
       const userProfile = await fetchUserProfile(data.user);
-      setUser(userProfile);
+      updateActiveUser(userProfile);
       return { success: true, user: userProfile };
     } catch (err) {
       const msg = err.message || 'Authentication error';
@@ -159,17 +189,19 @@ export function AuthProvider({ children }) {
       const res = await fetch('/auth/demo-user-login', { method: 'POST' });
       const data = await res.json();
       if (data.success && data.user) {
-        setUser(data.user);
+        updateActiveUser(data.user);
         return { success: true, user: data.user };
       }
     } catch (err) {
-      setUser({
+      const demoUser = {
         id: 'demo_user_123',
         email: 'alex.user@revora.ai',
         name: 'Alex Rivera',
         avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
         role: 'user',
-      });
+      };
+      updateActiveUser(demoUser);
+      return { success: true, user: demoUser };
     }
   };
 
@@ -181,7 +213,7 @@ export function AuthProvider({ children }) {
     } catch (err) {
       console.warn('Sign out error:', err);
     } finally {
-      setUser(null);
+      updateActiveUser(null);
       setSession(null);
     }
   };

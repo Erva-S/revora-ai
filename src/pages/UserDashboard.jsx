@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import BriefingCard from '../components/BriefingCard';
+import TaskExtractorModal from '../components/TaskExtractorModal';
 import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
   const { user, logout } = useAuth();
   const [micActive, setMicActive] = useState(false);
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
   const sampleTranscripts = [
     { id: 1, title: 'Q3 Front-End Architecture Review', date: 'Today, 2:30 PM', duration: '34 mins', summary: 'Approved liquid glass UI components and sub-50ms streaming targets.' },
@@ -164,11 +166,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
               </p>
             </div>
             <button
-              onClick={onOpenTryModal}
+              onClick={() => setIsTaskModalOpen(true)}
               className="mt-6 py-2.5 px-4 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
               <CheckSquare className="w-3.5 h-3.5" />
-              <span>View Action Items</span>
+              <span>Extract Action Items</span>
             </button>
           </div>
 
@@ -209,6 +211,12 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
         </div>
 
       </main>
+
+      {/* Task Extractor Modal */}
+      <TaskExtractorModal
+        isOpen={isTaskModalOpen}
+        onClose={() => setIsTaskModalOpen(false)}
+      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import HeroSection from './components/HeroSection';
@@ -16,8 +16,13 @@ import UserDashboard from './pages/UserDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 
 function MainApp() {
-  const { user } = useAuth();
-  const [currentView, setCurrentView] = useState('home'); // 'home' | 'dashboard' | 'admin-dashboard'
+  const { user, loading } = useAuth();
+  
+  // Initialize view from localStorage if available, or default to 'home'
+  const [currentView, setCurrentView] = useState(() => {
+    return localStorage.getItem('revora_current_view') || 'home';
+  });
+
   const [isTryModalOpen, setIsTryModalOpen] = useState(false);
   const [isFeatureModalOpen, setIsFeatureModalOpen] = useState(false);
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
@@ -26,6 +31,24 @@ function MainApp() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [activeFeatureId, setActiveFeatureId] = useState('transcription');
   const [initialPrompt, setInitialPrompt] = useState('');
+
+  // 1. Keep view state in sync with authenticated user on reload/mount
+  useEffect(() => {
+    if (user) {
+      const targetView = user.role === 'admin' ? 'admin-dashboard' : 'dashboard';
+      setCurrentView(targetView);
+      localStorage.setItem('revora_current_view', targetView);
+    } else {
+      setCurrentView('home');
+      localStorage.removeItem('revora_current_view');
+    }
+  }, [user]);
+
+  // Helper to safely navigate views and persist state
+  const changeView = (view) => {
+    setCurrentView(view);
+    localStorage.setItem('revora_current_view', view);
+  };
 
   const handleOpenTryModal = (prompt = '') => {
     setInitialPrompt(prompt);
@@ -43,34 +66,45 @@ function MainApp() {
       return;
     }
     if (user.role === 'admin') {
-      setCurrentView('admin-dashboard');
+      changeView('admin-dashboard');
     } else {
-      setCurrentView('dashboard');
+      changeView('dashboard');
     }
   };
 
   const handleLoginSuccess = (authenticatedUser) => {
     if (authenticatedUser?.role === 'admin') {
-      setCurrentView('admin-dashboard');
+      changeView('admin-dashboard');
     } else {
-      setCurrentView('dashboard');
+      changeView('dashboard');
     }
   };
 
+  // Prevent UI flickering while context loads
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-neutral-900 text-white flex items-center justify-center font-sans">
+        <div className="text-xs font-mono text-neutral-400 animate-pulse">
+          Restoring session...
+        </div>
+      </div>
+    );
+  }
+
   // Render Protected Dashboards when view state changes
-  if (currentView === 'dashboard') {
+  if (currentView === 'dashboard' && user) {
     return (
       <UserDashboard
-        onNavigateHome={() => setCurrentView('home')}
+        onNavigateHome={() => changeView('home')}
         onOpenTryModal={() => handleOpenTryModal('')}
       />
     );
   }
 
-  if (currentView === 'admin-dashboard') {
+  if (currentView === 'admin-dashboard' && user) {
     return (
       <AdminDashboard
-        onNavigateHome={() => setCurrentView('home')}
+        onNavigateHome={() => changeView('home')}
       />
     );
   }
@@ -148,7 +182,7 @@ function MainApp() {
         onClose={() => setIsDemoModalOpen(false)}
       />
 
-      {/* MODAL 6: Unified Passport.js Login Modal (Google OAuth + Admin Local Strategy) */}
+      {/* MODAL 6: Unified Passport.js Login Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}

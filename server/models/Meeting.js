@@ -2,29 +2,22 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../db');
 
 const Meeting = sequelize.define('Meeting', {
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
   title: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: true
+  },
+  startTime: {
+    type: DataTypes.DATE,
+    allowNull: true
   },
   recipientEmail: {
-    type: DataTypes.TEXT,
-    allowNull: false
-  },
-  details: {
-    type: DataTypes.TEXT,
+    type: DataTypes.STRING,
     allowNull: true
-  },
-  briefingText: {
-    type: DataTypes.TEXT,
-    allowNull: true
-  },
-  scheduledAt: {
-    type: DataTypes.DATE,
-    allowNull: false
-  },
-  isPublished: {
-    type: DataTypes.BOOLEAN,
-    defaultValue: false
   }
 });
 

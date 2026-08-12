@@ -139,13 +139,12 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
     if (!botStatus?.botId) return;
     try {
       setLoading(true);
+      setBotStatus((current) => (current ? { ...current, status: 'leaving' } : null));
       await supabase.functions.invoke(`deploy-bot?bot_id=${botStatus.botId}`, {
         method: 'DELETE',
       });
-      setBotStatus(null);
     } catch (ejectErr) {
       console.warn('Eject bot notice:', ejectErr);
-      setBotStatus(null);
     } finally {
       setLoading(false);
     }
@@ -164,7 +163,7 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
           </div>
           <div>
             <h3 className="font-outfit font-black text-xl text-black flex items-center gap-2">
-              MeetingBaaS Bot Deployer
+              Revora Bot Deployer
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-[#0084FF] uppercase tracking-wider">
                 Revora Assistant
               </span>
@@ -289,6 +288,8 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                   <span>
                     {botStatus.status === 'recording'
                       ? 'Recording'
+                      : botStatus.status === 'leaving'
+                      ? 'Leaving & Processing...'
                       : botStatus.status === 'summarized' || botStatus.status === 'completed'
                       ? 'Completed'
                       : botStatus.status === 'failed'
@@ -297,14 +298,16 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                   </span>
                 </div>
 
-                <button
-                  onClick={handleEjectBot}
-                  disabled={loading}
-                  className="px-3.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
-                >
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  <span>Force Bot to Leave Call</span>
-                </button>
+                {botStatus.status !== 'summarized' && botStatus.status !== 'completed' && (
+                  <button
+                    onClick={handleEjectBot}
+                    disabled={loading || botStatus.status === 'leaving'}
+                    className="px-3.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 disabled:bg-neutral-100 disabled:text-black/40 border border-red-200 text-red-600 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    <span>{botStatus.status === 'leaving' ? 'Leaving Call...' : 'Force Bot to Leave Call'}</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -327,30 +330,103 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
               </div>
             </div>
 
-            {/* Pipeline Status */}
-            <div className="p-4 rounded-xl bg-white/90 border border-sky-100 space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-black">
-                <span className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#0084FF] animate-ping" />
-                  MeetingBaaS Pipeline Status
-                </span>
-                <span className="text-[#0084FF] font-mono text-[11px]">Awaiting "complete" Webhook & Gemini AI</span>
-              </div>
+            {/* Dynamic Pipeline Status */}
+            {(() => {
+              const status = botStatus.status;
+              const summary = botStatus.summary;
+              const isDone = status === 'summarized' || status === 'completed';
+              const isFailed = status === 'failed';
+              const isLeaving = status === 'leaving';
+              const isRecording = status === 'recording' || status === 'in_call';
 
-              <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] text-center font-medium">
-                <div className="py-1.5 px-2 rounded-lg bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 flex items-center justify-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  <span>1. Bot Dispatched</span>
+              // Step 2 state & styling
+              let step2Text = '2. Awaiting Join';
+              let step2Style = 'bg-sky-100 text-[#0084FF] font-bold border border-sky-300 animate-pulse';
+              let step2Icon = <Loader2 className="w-3 h-3 animate-spin" />;
+
+              if (isRecording) {
+                step2Text = '2. In Call & Recording';
+                step2Style = 'bg-emerald-100 text-emerald-700 font-bold border border-emerald-300 animate-pulse';
+                step2Icon = <Video className="w-3 h-3" />;
+              } else if (isLeaving) {
+                step2Text = '2. Leaving Call...';
+                step2Style = 'bg-amber-100 text-amber-800 font-bold border border-amber-300 animate-pulse';
+                step2Icon = <Loader2 className="w-3 h-3 animate-spin" />;
+              } else if (isDone) {
+                step2Text = '2. Call Ended';
+                step2Style = 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-200';
+                step2Icon = <CheckCircle2 className="w-3 h-3 text-emerald-600" />;
+              } else if (isFailed) {
+                step2Text = '2. Call Interrupted';
+                step2Style = 'bg-red-50 text-red-700 font-bold border border-red-200';
+                step2Icon = <AlertCircle className="w-3 h-3 text-red-500" />;
+              }
+
+              // Step 3 state & styling
+              let step3Text = '3. Gemini AI Summary';
+              let step3Style = 'bg-neutral-100 text-black/50 border border-neutral-200';
+              let step3Icon = null;
+
+              if (isLeaving) {
+                step3Text = '3. Processing AI Insights...';
+                step3Style = 'bg-sky-100 text-[#0084FF] font-bold border border-sky-300 animate-pulse';
+                step3Icon = <Loader2 className="w-3 h-3 animate-spin" />;
+              } else if (isDone || summary) {
+                step3Text = summary ? '3. AI Summary Ready' : '3. Processed (No Audio)';
+                step3Style = 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-200';
+                step3Icon = <CheckCircle2 className="w-3 h-3 text-emerald-600" />;
+              } else if (isFailed) {
+                step3Text = '3. AI Skipped';
+                step3Style = 'bg-red-50 text-red-700 font-bold border border-red-200';
+                step3Icon = <AlertCircle className="w-3 h-3 text-red-500" />;
+              }
+
+              // Header text
+              let headerNote = 'Awaiting Bot Join & Recording';
+              if (isRecording) headerNote = 'Active in Call — Recording Stream';
+              else if (isLeaving) headerNote = 'Bot Left — Processing Webhook & Gemini AI...';
+              else if (isDone) headerNote = 'Pipeline Complete! AI Summary Generated';
+              else if (isFailed) headerNote = 'Pipeline Stopped (Bot Failure)';
+
+              return (
+                <div className="p-4 rounded-xl bg-white/90 border border-sky-100 space-y-3">
+                  <div className="flex items-center justify-between text-xs font-bold text-black">
+                    <span className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${isDone ? 'bg-emerald-500' : isFailed ? 'bg-red-500' : 'bg-[#0084FF] animate-ping'}`} />
+                      MeetingBaaS Pipeline Status
+                    </span>
+                    <span className="text-[#0084FF] font-mono text-[11px]">{headerNote}</span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-[11px] text-center font-medium">
+                    <div className="py-1.5 px-2 rounded-lg bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 flex items-center justify-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                      <span>1. Bot Dispatched</span>
+                    </div>
+
+                    <div className={`py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 ${step2Style}`}>
+                      {step2Icon}
+                      <span>{step2Text}</span>
+                    </div>
+
+                    <div className={`py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 ${step3Style}`}>
+                      {step3Icon}
+                      <span>{step3Text}</span>
+                    </div>
+                  </div>
+
+                  {summary && (
+                    <div className="p-3.5 rounded-xl bg-emerald-50/90 border border-emerald-200 text-xs text-emerald-950 space-y-1 mt-2">
+                      <div className="flex items-center gap-1.5 font-bold text-emerald-800">
+                        <Sparkles className="w-4 h-4 text-emerald-600" />
+                        <span>AI Executive Summary Preview</span>
+                      </div>
+                      <p className="leading-relaxed text-black/80 font-sans">{summary}</p>
+                    </div>
+                  )}
                 </div>
-                <div className="py-1.5 px-2 rounded-lg bg-sky-100 text-[#0084FF] font-bold border border-sky-300 flex items-center justify-center gap-1 animate-pulse">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>2. Awaiting Join Confirmation</span>
-                </div>
-                <div className="py-1.5 px-2 rounded-lg bg-neutral-100 text-black/50 border border-neutral-200">
-                  <span>3. Gemini 3.5 Flash</span>
-                </div>
-              </div>
-            </div>
+              );
+            })()}
           </div>
         )}
       </div>

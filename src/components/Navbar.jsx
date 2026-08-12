@@ -86,12 +86,21 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
                       : 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-[#0084FF]'
                   }`}
                 >
-                  <img
-                    src={user.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face'}
-                    alt="User Avatar"
-                    className="w-5 h-5 rounded-full object-cover"
-                  />
-                  <span>{user.role === 'admin' ? 'Admin Control' : 'User Dashboard'}</span>
+                  {user.avatar ? (
+                    <img
+                      src={user.avatar}
+                      alt={user.name || 'User Avatar'}
+                      className="w-5.5 h-5.5 rounded-full object-cover border border-white"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <div className="w-5.5 h-5.5 rounded-full bg-[#0084FF] text-white flex items-center justify-center text-[10px] font-black uppercase shadow-2xs shrink-0">
+                      {(user.name || user.email || 'U').charAt(0)}
+                    </div>
+                  )}
+                  <span className="max-w-[140px] truncate">{user.name || user.email || (user.role === 'admin' ? 'Admin Control' : 'User Dashboard')}</span>
                 </button>
               ) : (
                 <button
@@ -180,7 +189,7 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
                     className="w-full h-11 rounded-[14px] bg-[#0084FF] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md"
                   >
                     <User className="w-4 h-4" />
-                    <span>Open Dashboard</span>
+                    <span>{user.name || user.email || 'Open Dashboard'}</span>
                   </button>
                 ) : (
                   <button

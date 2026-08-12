@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
-import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
+import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, CheckCircle2, Clock, AlertCircle, Video, ExternalLink } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
@@ -339,6 +339,21 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
                 </button>
               </div>
 
+              {selectedMeeting.recording_url && (
+                <a
+                  href={selectedMeeting.recording_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-between p-3.5 rounded-2xl bg-[#0084FF]/5 border border-[#0084FF]/20 hover:bg-[#0084FF]/10 transition-colors group"
+                >
+                  <span className="flex items-center gap-2.5 text-sm font-bold text-[#0084FF]">
+                    <Video className="w-4 h-4" />
+                    Watch Meeting Recording
+                  </span>
+                  <ExternalLink className="w-4 h-4 text-[#0084FF]/70 group-hover:text-[#0084FF]" />
+                </a>
+              )}
+
               {selectedMeeting.summary && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-bold text-black uppercase tracking-wider">Executive Summary</h4>
@@ -374,6 +389,26 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
                   </div>
                 </div>
               )}
+
+              {selectedMeeting.error_message && (
+                <div className="flex items-start gap-2.5 p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-800 leading-relaxed">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                  <span>{selectedMeeting.error_message}</span>
+                </div>
+              )}
+
+              {!selectedMeeting.summary &&
+                !selectedMeeting.transcript &&
+                !selectedMeeting.error_message &&
+                !(Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0) && (
+                  <div className="flex items-center gap-2.5 p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/60">
+                    <Clock className="w-4 h-4 shrink-0 text-[#0084FF]" />
+                    <span>
+                      No AI insights yet. Summary, transcript, and action items appear here automatically once the meeting
+                      ends and processing completes.
+                    </span>
+                  </div>
+                )}
             </div>
           </div>
         )}

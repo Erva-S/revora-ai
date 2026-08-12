@@ -1,10 +1,15 @@
 // ====================================================================
 // REVORA — Edge Function: deploy-bot
 //
-// 1. Authenticates request JWT token (or extracts user_id)
-// 2. Dispatches bot via MeetingBaaS API (https://api.meetingbaas.com/v1/bots)
+// 1. Authenticates request JWT token (extracts user_id from the JWT).
+// 2. Dispatches a bot via the MeetingBaaS v2 API (POST https://api.meetingbaas.com/v2/bots)
+//    with recording + transcription + callback + silence-based leave enabled.
 // 3. Surfaces MeetingBaaS API failures directly so the caller can see the real dispatch error.
 // 4. Persists the meeting row only after a bot is successfully created.
+//
+// NOTE: the v1 create-bot fields (webhook_url / automatic_leave / speech_to_text)
+// are IGNORED by v2 — that is why a v1-style bot joined but never recorded,
+// transcribed, or called back. This function speaks the v2 contract.
 // ====================================================================
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
@@ -34,6 +39,28 @@ function detectPlatform(url: string): string {
 function sanitizeKey(rawKey: string | undefined): string {
   if (!rawKey) return '';
   return rawKey.replace(/^["'\s]+|["'\s]+$/g, '').trim();
+}
+
+// v2 accepts only these transcription providers and rejects anything else with
+// HTTP 400 — which kills the whole deploy, so the bot never even joins. The
+// legacy value "Default" (still present in the root .env) is one such value.
+// Mirror the reference implementation: normalize, and fall back to gladia.
+const V2_STT_PROVIDERS = new Set(['gladia', 'deepgram', 'assemblyai', 'speechmatics', 'soniox']);
+
+function transcriptionProvider(): string {
+  const raw = sanitizeKey(Deno.env.get('SPEECH_TO_TEXT_PROVIDER')).toLowerCase();
+  if (raw && !V2_STT_PROVIDERS.has(raw)) {
+    console.warn(`[Deploy-Bot] SPEECH_TO_TEXT_PROVIDER="${raw}" is not a v2 provider — using gladia instead.`);
+  }
+  return V2_STT_PROVIDERS.has(raw) ? raw : 'gladia';
+}
+
+// Bare origin for the MeetingBaaS REST API. We append the explicit /v2/...
+// paths ourselves, so strip any trailing slash or version suffix a value
+// like "https://api.meetingbaas.com/v2" might carry.
+function meetingBaasBaseUrl(): string {
+  const raw = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || 'https://api.meetingbaas.com').trim();
+  return raw.replace(/\/+$/, '').replace(/\/v[12]$/i, '');
 }
 
 function buildWebhookUrl(): string {
@@ -71,6 +98,16 @@ serve(async (req: Request): Promise<Response> => {
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co';
   const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
 
+  // Without the service role we run as anon, and the meetings RLS policy
+  // (auth.uid() = user_id or user_id is null) then rejects any row we stamp
+  // with a real user_id — the bot deploys but no meeting row is ever created.
+  if (!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) {
+    console.warn(
+      '[Deploy-Bot] SUPABASE_SERVICE_ROLE_KEY secret is not set; falling back to the anon key. ' +
+        'Inserting a user-owned meetings row will be blocked by RLS. Set the secret.'
+    );
+  }
+
   // Handle DELETE request to forcibly eject bot from call
   if (req.method === 'DELETE') {
     try {
@@ -83,9 +120,10 @@ serve(async (req: Request): Promise<Response> => {
 
       if (cleanKey && !cleanKey.includes('your_meetingbaas')) {
         const headers = { 'x-meeting-baas-api-key': cleanKey };
+        // v2: ask the bot to leave. (v1 used DELETE /bots/{id}; v2 exposes an
+        // explicit leave action.) Best effort — a bot that already left is fine.
         try {
-          await fetch(`https://api.meetingbaas.com/v1/bots/${botId}`, { method: 'DELETE', headers });
-          await fetch(`https://api.meetingbaas.com/bots/${botId}`, { method: 'DELETE', headers });
+          await fetch(`${meetingBaasBaseUrl()}/v2/bots/${botId}/leave`, { method: 'POST', headers });
         } catch (_) {}
       }
 
@@ -93,7 +131,7 @@ serve(async (req: Request): Promise<Response> => {
         const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
         await supabaseAdmin
           .from('meetings')
-          .update({ status: 'completed', ended_at: new Date().toISOString() })
+          .update({ ended_at: new Date().toISOString() })
           .eq('bot_id', botId);
       }
 
@@ -116,7 +154,7 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     const meetingUrl = String(payload.meeting_url || payload.meetingUrl || '').trim();
-    const title = payload.title ? String(payload.title).slice(0, 200) : 'Revora AI Assistant Sync';
+    const title = payload.title ? String(payload.title).slice(0, 200) : 'Revora';
 
     if (!meetingUrl) {
       return json({ success: false, error: 'meeting_url is required' }, 400);
@@ -140,23 +178,50 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     const webhookUrl = buildWebhookUrl();
+    const webhookSecret = sanitizeKey(Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET'));
 
-    // Keep the payload aligned with the documented v1 create-bot contract.
+    // v2 create-bot body (schema: CreateBotRequestBodyInput). Recording is
+    // automatic once the bot joins; transcription/callback/leave are explicit.
+    const clampTimeout = (name: string, fallback: number): number => {
+      const n = Number(Deno.env.get(name));
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+    };
     const baasPayload = {
       meeting_url: meetingUrl,
-      bot_name: 'Revora Assistant',
+      bot_name: Deno.env.get('BOT_NAME')?.trim() || 'Revora Assistant',
+      // recording_mode only picks the layout; recording itself is automatic.
       recording_mode: 'speaker_view',
-      automatic_leave: {
-        waiting_room_timeout: 600,
+      // The auto message the bot posts in chat when it joins.
+      entry_message:
+        Deno.env.get('BOT_ENTRY_MESSAGE')?.trim() ||
+        "Hi, I'm an AI assistant here to take notes for this meeting.",
+      // Turn transcription ON (off by default in v2) and pick the provider.
+      transcription_enabled: true,
+      transcription_config: {
+        provider: transcriptionProvider(),
       },
-      webhook_url: webhookUrl,
+      // Where MeetingBaaS POSTs bot.status_change / bot.completed / bot.failed.
+      callback_enabled: true,
+      callback_config: {
+        url: webhookUrl,
+        method: 'POST',
+        // Optional shared secret, echoed back to us in the x-mb-secret header.
+        ...(webhookSecret ? { secret: webhookSecret } : {}),
+      },
+      // Real meeting-end detection: the bot leaves after `silence_timeout`
+      // seconds of no audio (i.e. once everyone has left) — not a fixed clock.
+      timeout_config: {
+        waiting_room_timeout: clampTimeout('BOT_WAITING_ROOM_TIMEOUT', 600),
+        no_one_joined_timeout: clampTimeout('BOT_NO_ONE_JOINED_TIMEOUT', 600),
+        silence_timeout: clampTimeout('BOT_SILENCE_TIMEOUT', 600),
+      },
     };
 
     let botId: string | null = null;
     let dispatchError: string | null = null;
 
     if (cleanKey && !cleanKey.includes('your_meetingbaas_key_here')) {
-      const endpoint = 'https://api.meetingbaas.com/bots';
+      const endpoint = `${meetingBaasBaseUrl()}/v2/bots`;
       try {
         console.log(`[Deploy-Bot] POSTing request to ${endpoint}...`);
         const baasResp = await fetch(endpoint, {
@@ -184,7 +249,8 @@ serve(async (req: Request): Promise<Response> => {
             body: rawText,
           });
         } else {
-          botId = String(baasData.bot_id || baasData.id || '').trim();
+          // v2 envelope: { success, data: { bot_id } }. Keep flat fallbacks.
+          botId = String(baasData?.data?.bot_id || baasData.bot_id || baasData.id || '').trim();
           if (!botId) {
             dispatchError = `MeetingBaaS returned a successful response without a bot_id: ${rawText || '<empty response>'}`;
             console.error('[Deploy-Bot Error] Missing bot_id in MeetingBaaS response:', {

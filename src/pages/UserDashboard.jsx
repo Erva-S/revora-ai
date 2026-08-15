@@ -3,15 +3,34 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
-import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
+import TaskExtractorModal from '../components/TaskExtractorModal';
+import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, Clock } from 'lucide-react';
 import confetti from 'canvas-confetti';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
   const { user, logout } = useAuth();
   const [micActive, setMicActive] = useState(false);
   const [meetingsList, setMeetingsList] = useState([]);
+  const [briefingsList, setBriefingsList] = useState([]);
   const [loadingMeetings, setLoadingMeetings] = useState(true);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+
+  // Fetch AI Briefings from Node backend
+  const fetchBriefings = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/briefings`);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.briefings || []);
+        setBriefingsList(list);
+      }
+    } catch (err) {
+      console.warn('Briefings query notice:', err);
+    }
+  };
 
   // Fetch real meetings from Supabase Postgres database
   const fetchMeetings = async () => {
@@ -34,6 +53,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
 
   useEffect(() => {
     fetchMeetings();
+    fetchBriefings();
 
     let channel = null;
     try {
@@ -41,6 +61,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
         .channel('meetings_realtime_feed')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => {
           fetchMeetings();
+          fetchBriefings();
         })
         .subscribe();
     } catch (realtimeErr) {
@@ -148,8 +169,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
         <MeetingBotDeployer />
 
         {/* Live Pre-Meeting Briefing Feed */}
-        <section>
-          <BriefingCard meetingId={1} />
+        <section className="space-y-4">
+          <h3 className="font-outfit font-bold text-lg text-black">Pre-Meeting Briefing</h3>
+          <BriefingCard briefing={briefingsList[0]} />
         </section>
 
         {/* Quick Tools Grid */}
@@ -209,11 +231,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
               </p>
             </div>
             <button
-              onClick={onOpenTryModal}
+              onClick={() => setIsTaskModalOpen(true)}
               className="mt-6 py-2.5 px-4 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
               <CheckSquare className="w-3.5 h-3.5" />
-              <span>View Action Items</span>
+              <span>Extract Action Items</span>
             </button>
           </div>
 
@@ -229,7 +251,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
 
             <div className="flex items-center gap-2">
               <button
-                onClick={fetchMeetings}
+                onClick={() => { fetchMeetings(); fetchBriefings(); }}
                 disabled={loadingMeetings}
                 className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 flex items-center gap-1.5 transition-colors cursor-pointer"
               >
@@ -379,6 +401,12 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
         )}
 
       </main>
+
+      {/* Task Extractor Modal */}
+      <TaskExtractorModal
+        isOpen={isTaskModalOpen}
+        onClose={() => setIsTaskModalOpen(false)}
+      />
     </div>
   );
 }

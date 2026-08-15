@@ -1,93 +1,90 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, User, FileText, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
-import { supabase } from '../supabaseClient';
 
-const BriefingCard = ({ meetingId = 1 }) => {
-  const [briefing, setBriefing] = useState(null);
-  const [loading, setLoading] = useState(true);
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+
+const BriefingCard = ({ briefing: initialBriefing }) => {
+  const formatBriefingData = (raw) => {
+    if (!raw) return null;
+    const title = raw.title || raw.meeting_title || 'Upcoming Scheduled Meeting';
+    return {
+      title,
+      recipientEmail: raw.recipientEmail || raw.attendees || raw.recipient_email || 'N/A',
+      status: raw.status || 'Ready',
+      summaryContext:
+        raw.summaryContext ||
+        raw.summary ||
+        raw.context ||
+        `Automated pre-meeting intelligence briefing generated for "${title}". Objectives focused on deliverable sync and architecture review.`,
+      keyTopics:
+        Array.isArray(raw.keyTopics) && raw.keyTopics.length > 0
+          ? raw.keyTopics
+          : Array.isArray(raw.action_items) && raw.action_items.length > 0
+          ? raw.action_items
+          : ['Architecture & Performance Review', 'API Endpoint Alignment', 'Task Assignments'],
+    };
+  };
+
+  const [briefing, setBriefing] = useState(formatBriefingData(initialBriefing));
+  const [loading, setLoading] = useState(!initialBriefing);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (initialBriefing) {
+      setBriefing(formatBriefingData(initialBriefing));
+      setLoading(false);
+      return;
+    }
+
     let isMounted = true;
 
-    async function loadBriefing() {
+    async function loadLatestBriefing() {
       try {
         setLoading(true);
         setError(null);
 
-        let query = supabase.from('meetings').select('*');
-        if (typeof meetingId === 'string' && meetingId.length > 10) {
-          query = query.eq('id', meetingId);
-        }
-        
-        const { data, error: dbError } = await query.order('created_at', { ascending: false }).limit(1).maybeSingle();
+        const res = await fetch(`${API_BASE_URL}/api/briefings`);
+        if (!res.ok) throw new Error('Failed to fetch briefing from backend');
 
-        if (dbError) throw dbError;
+        const data = await res.json();
+        const briefings = Array.isArray(data) ? data : data.briefings || [];
+        const latest = briefings[0];
 
-        if (isMounted) {
-          if (data) {
-            setBriefing({
-              title: data.title || 'Executive Project Review',
-              recipientEmail: data.meeting_url || 'team@revora.ai',
-              status: data.status || 'completed',
-              summaryContext: data.summary || 'Pre-meeting briefing compiled from recent project transcripts and architecture milestones.',
-              keyTopics: Array.isArray(data.action_items) && data.action_items.length > 0
-                ? data.action_items
-                : ['Architecture & Performance Audit', 'Supabase Realtime Sync', 'Security & RLS Enforcement'],
-            });
-          } else {
-            // Default structured briefing if table is empty
-            setBriefing({
-              title: 'Revora Architecture Briefing',
-              recipientEmail: 'leadership@revora.ai',
-              status: 'ready',
-              summaryContext: 'Pre-meeting intelligence brief ready for executive review.',
-              keyTopics: ['Supabase Edge Functions', 'MeetingBaaS Integration', 'Gemini AI Summarization'],
-            });
-          }
-          setLoading(false);
+        if (isMounted && latest) {
+          setBriefing(formatBriefingData(latest));
         }
       } catch (err) {
-        console.warn('Briefing query notice (falling back to default context):', err?.message || err);
-        if (isMounted) {
-          setBriefing({
-            title: 'Revora Architecture Briefing',
-            recipientEmail: 'leadership@revora.ai',
-            status: 'ready',
-            summaryContext: 'Pre-meeting intelligence brief ready for executive review.',
-            keyTopics: ['Supabase Edge Functions', 'MeetingBaaS Integration', 'Gemini AI Summarization'],
-          });
-          setLoading(false);
-        }
+        console.warn('Backend briefing query error:', err);
+        if (isMounted) setError(err.message);
+      } finally {
+        if (isMounted) setLoading(false);
       }
     }
 
-    loadBriefing();
+    loadLatestBriefing();
 
     return () => {
       isMounted = false;
     };
-  }, [meetingId]);
+  }, [initialBriefing]);
 
   if (loading) {
     return (
       <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs flex items-center justify-center gap-3 text-black/50 font-medium">
         <Clock className="w-5 h-5 animate-spin text-[#0084FF]" />
-        <span>Fetching live meeting briefing from database...</span>
+        <span>Fetching live AI meeting briefing...</span>
       </div>
     );
   }
 
-  if (error) {
+  if (error || !briefing) {
     return (
-      <div className="p-6 rounded-[24px] bg-red-50 border border-red-200 text-red-600 text-xs font-medium flex items-center gap-2">
-        <AlertCircle className="w-4 h-4 shrink-0" />
-        <span>Error loading briefing context: {error}</span>
+      <div className="p-6 rounded-[24px] bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium flex items-center gap-2">
+        <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+        <span>No active pre-meeting briefings found. Schedule a meeting from Admin.</span>
       </div>
     );
   }
-
-  if (!briefing) return null;
 
   return (
     <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs space-y-4 font-sans">
@@ -100,7 +97,7 @@ const BriefingCard = ({ meetingId = 1 }) => {
             <h3 className="font-outfit font-bold text-lg text-black">{briefing.title}</h3>
             <p className="text-xs text-black/50 flex items-center gap-1">
               <User className="w-3 h-3 text-black/40" />
-              <span className="truncate max-w-[280px]">Recipient / URL: {briefing.recipientEmail}</span>
+              <span className="truncate max-w-[280px]">Attendees: {briefing.recipientEmail}</span>
             </p>
           </div>
         </div>
@@ -115,7 +112,7 @@ const BriefingCard = ({ meetingId = 1 }) => {
         <div className="p-3.5 rounded-xl bg-neutral-50 border border-black/5 text-xs leading-relaxed text-black/80 flex items-start gap-2">
           <FileText className="w-4 h-4 text-[#0084FF] shrink-0 mt-0.5" />
           <div>
-            <strong className="text-black font-semibold">Summary Context: </strong>
+            <strong className="text-black font-semibold">AI Briefing Summary: </strong>
             {briefing.summaryContext}
           </div>
         </div>
@@ -130,7 +127,7 @@ const BriefingCard = ({ meetingId = 1 }) => {
                 key={index}
                 className="px-3 py-1 rounded-lg bg-neutral-100 text-black/80 font-medium text-xs border border-black/5"
               >
-                • {typeof topic === 'string' ? topic : JSON.stringify(topic)}
+                • {typeof topic === 'string' ? topic : topic.task || JSON.stringify(topic)}
               </span>
             ))}
           </div>

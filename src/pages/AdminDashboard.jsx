@@ -1,13 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
-import { ShieldCheck, LogOut, Users, UserCheck, ShieldAlert, ArrowLeft, Trash2, Edit3, Database, RefreshCw, Key, Lock, Check, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, LogOut, Users, Database, RefreshCw, Lock, Check, Trash2, Calendar, Mail, Send, ShieldAlert, ArrowLeft, Clock } from 'lucide-react';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export default function AdminDashboard({ onNavigateHome }) {
   const { user, logout } = useAuth();
+
+  // Component States
   const [usersList, setUsersList] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
+
+  // New Meeting Form States
+  const [meetingTitle, setMeetingTitle] = useState('');
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [meetingDetails, setMeetingDetails] = useState('');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [creatingMeeting, setCreatingMeeting] = useState(false);
 
   // Fetch users list directly from Supabase profiles table
   const fetchUsers = async () => {
@@ -45,6 +56,49 @@ export default function AdminDashboard({ onNavigateHome }) {
       fetchUsers();
     }
   }, [user]);
+
+  // Handle Create & Dispatch Scheduled Meeting Briefing
+  const handleCreateMeeting = async (e) => {
+    e.preventDefault();
+    if (!meetingTitle || !recipientEmail || !scheduledAt) {
+      alert('Please fill out the meeting title, attendee email, and scheduled date/time.');
+      return;
+    }
+
+    setCreatingMeeting(true);
+    setActionMessage(null);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: meetingTitle,
+          recipientEmail: recipientEmail,
+          agenda: meetingDetails,
+          scheduledAt: scheduledAt,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        setActionMessage(`Meeting scheduled! Briefing generated and dispatched to ${recipientEmail}.`);
+        setMeetingTitle('');
+        setRecipientEmail('');
+        setMeetingDetails('');
+        setScheduledAt('');
+        setTimeout(() => setActionMessage(null), 6000);
+      } else {
+        alert(data.error || 'Failed to schedule meeting.');
+      }
+    } catch (err) {
+      console.error('Error creating meeting:', err);
+      alert('Server connection error. Ensure node index.js is active on port 5001.');
+    } finally {
+      setCreatingMeeting(false);
+    }
+  };
 
   // Toggle user role in Supabase profiles
   const handleToggleRole = async (targetUserId, currentRole) => {
@@ -86,7 +140,7 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
-  // Guard Access: Check if authenticated user is Admin
+  // Single Gate: Check if user is logged in as Admin
   if (!user || user.role !== 'admin') {
     return (
       <div className="min-h-screen bg-neutral-900 text-white flex items-center justify-center p-6 font-sans">
@@ -96,7 +150,7 @@ export default function AdminDashboard({ onNavigateHome }) {
           </div>
           <h2 className="font-outfit font-black text-2xl">Access Denied: Admin Required</h2>
           <p className="text-xs text-neutral-400 leading-relaxed">
-            You are currently logged in as {user ? `"${user.email}" (${user.role})` : 'a guest user'}. The Admin Control Center is restricted strictly to accounts with <code className="text-red-400 font-mono">role === 'admin'</code>.
+            You are logged in as {user ? `"${user.email}" (${user.role})` : 'a guest user'}. Access requires an account with <code className="text-red-400 font-mono">role === 'admin'</code>.
           </p>
           <div className="pt-2 flex gap-3">
             <button
@@ -117,8 +171,8 @@ export default function AdminDashboard({ onNavigateHome }) {
     );
   }
 
-  const adminCount = usersList.filter(u => u.role === 'admin').length;
-  const standardCount = usersList.filter(u => u.role === 'user').length;
+  const adminCount = usersList.filter((u) => u.role === 'admin').length;
+  const standardCount = usersList.filter((u) => u.role === 'user').length;
 
   return (
     <div className="min-h-screen bg-neutral-900 text-neutral-100 font-sans">
@@ -143,7 +197,7 @@ export default function AdminDashboard({ onNavigateHome }) {
             </div>
             <span>Admin Control Center</span>
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase">
-              Supabase Auth & DB
+              Authenticated
             </span>
           </div>
         </div>
@@ -152,12 +206,12 @@ export default function AdminDashboard({ onNavigateHome }) {
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3 px-3.5 py-1.5 rounded-xl bg-neutral-800 border border-neutral-700">
             <img
-              src={user.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&crop=face'}
+              src={user?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&crop=face'}
               alt="Admin Avatar"
               className="w-7 h-7 rounded-full object-cover border border-amber-400"
             />
             <div className="hidden sm:flex flex-col text-left leading-tight">
-              <span className="font-bold text-xs text-white">{user.name || 'System Admin'}</span>
+              <span className="font-bold text-xs text-white">{user?.name || 'System Admin'}</span>
               <span className="text-[10px] text-amber-400 font-mono">ROLE: ADMIN</span>
             </div>
           </div>
@@ -223,6 +277,92 @@ export default function AdminDashboard({ onNavigateHome }) {
           </div>
         )}
 
+        {/* Meeting Scheduler & AI Briefing Dispatch Form */}
+        <div className="p-6 rounded-[28px] bg-neutral-800/70 border border-neutral-700 shadow-xl space-y-5">
+          <div className="flex items-center gap-3 pb-3 border-b border-neutral-700">
+            <div className="w-9 h-9 rounded-xl bg-sky-500/10 text-[#0084FF] flex items-center justify-center border border-sky-500/20">
+              <Calendar className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-outfit font-bold text-xl text-white">Schedule Meeting & Dispatch AI Briefing</h3>
+              <p className="text-xs text-neutral-400">Schedules a meeting and automatically dispatches the Gemini AI briefing and emails.</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleCreateMeeting} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-neutral-300 block">Meeting Title</label>
+                <input
+                  type="text"
+                  value={meetingTitle}
+                  onChange={(e) => setMeetingTitle(e.target.value)}
+                  placeholder="e.g. Q4 Strategy Sync & Product Architecture"
+                  className="w-full p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-[#0084FF]"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-neutral-300 block">Attendee Email(s)</label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 text-neutral-500 absolute left-3 top-3.5" />
+                  <input
+                    type="text"
+                    value={recipientEmail}
+                    onChange={(e) => setRecipientEmail(e.target.value)}
+                    placeholder="e.g. alex.user@revora.ai, sara@company.com"
+                    className="w-full pl-9 p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-[#0084FF]"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-neutral-300 block">Meeting Date & Time</label>
+                <div className="relative">
+                  <Clock className="w-4 h-4 text-neutral-500 absolute left-3 top-3.5" />
+                  <input
+                    type="datetime-local"
+                    value={scheduledAt}
+                    onChange={(e) => setScheduledAt(e.target.value)}
+                    className="w-full pl-9 p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white focus:outline-none focus:border-[#0084FF] [color-scheme:dark]"
+                    required
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-neutral-300 block">Meeting Context / Details (Optional)</label>
+              <textarea
+                value={meetingDetails}
+                onChange={(e) => setMeetingDetails(e.target.value)}
+                placeholder="e.g. Discuss Q4 UI/UX revamps, sub-50ms streaming latency targets, and budget approvals."
+                className="w-full h-24 p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-[#0084FF] resize-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={creatingMeeting}
+              className="py-3 px-6 rounded-xl bg-[#0084FF] hover:bg-sky-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer disabled:opacity-50"
+            >
+              {creatingMeeting ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Scheduling Meeting & AI Briefing...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" />
+                  <span>Schedule Meeting & Enable Auto-Dispatch</span>
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+
         {/* User Management Table */}
         <div className="p-6 rounded-[28px] bg-neutral-800/70 border border-neutral-700 shadow-xl space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-neutral-700">
@@ -245,7 +385,6 @@ export default function AdminDashboard({ onNavigateHome }) {
             </button>
           </div>
 
-          {/* Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-sans">
               <thead>
@@ -301,7 +440,7 @@ export default function AdminDashboard({ onNavigateHome }) {
                         {u.role === 'admin' ? 'Demote to User' : 'Promote to Admin'}
                       </button>
 
-                      {u.id !== user.id && (
+                      {u.id !== user?.id && (
                         <button
                           onClick={() => handleDeleteUser(u.id)}
                           className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 cursor-pointer transition-colors"

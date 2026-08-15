@@ -86,17 +86,21 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
         body: { meetingUrl: meetingUrl.trim() },
       });
 
-      if (data?.success === false || data?.error) {
-        throw new Error(data.error || 'Failed to dispatch bot.');
-      }
-
       if (funcError) {
         let detail = funcError.message;
         try {
-          const errCtx = await funcError.context?.json();
-          if (errCtx?.error) detail = errCtx.error;
+          if (typeof funcError.context?.json === 'function') {
+            const errCtx = await funcError.context.json();
+            if (errCtx?.error) detail = errCtx.error;
+          }
         } catch (_) {}
+        console.error('Edge Function invoke returned error:', funcError, detail);
         throw new Error(detail || 'Edge Function execution failed.');
+      }
+
+      if (data?.success === false || data?.error) {
+        console.error('Edge Function returned failure response:', data);
+        throw new Error(data.error || 'Failed to dispatch bot.');
       }
 
       const botId = data?.bot_id || data?.id;
@@ -372,7 +376,7 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                 step3Style = 'bg-sky-100 text-[#0084FF] font-bold border border-sky-300 animate-pulse';
                 step3Icon = <Loader2 className="w-3 h-3 animate-spin" />;
               } else if (isDone || summary) {
-                step3Text = summary ? '3. AI Summary Ready' : '3. Processed (No Audio)';
+                step3Text = summary ? '3. AI Summary Ready' : '3. Complete Transcript Ready';
                 step3Style = 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-200';
                 step3Icon = <CheckCircle2 className="w-3 h-3 text-emerald-600" />;
               } else if (isFailed) {

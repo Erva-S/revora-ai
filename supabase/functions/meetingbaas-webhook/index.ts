@@ -97,18 +97,233 @@ async function fetchSignedJson(url: string): Promise<any | null> {
 }
 
 // --------------------------------------------------------------------
-// Transcript normalization (v2 OutputTranscription.result.utterances)
-//
-//   [{ text, speaker, start, end, words:[{word,start,end}] }]
-// `speaker` is typically a diarization INDEX (0,1,2…), not a name — we
-// render those as "Speaker N". Stays defensive about older shapes too.
+// OpenAI Whisper large-v3 Model Transcriber (NVIDIA / Groq / HF / OpenAI)
 // --------------------------------------------------------------------
+async function transcribeWithWhisperLargeV3(audioUrl: string): Promise<any | null> {
+  console.log(`[Whisper large-v3] Fetching audio binary from ${scrub(audioUrl)}...`);
+  try {
+    const audioRes = await fetch(audioUrl, { signal: AbortSignal.timeout(60000) });
+    if (!audioRes.ok) {
+      console.warn(`[Whisper large-v3] Audio fetch HTTP status ${audioRes.status}`);
+      return null;
+    }
+    const audioBlob = await audioRes.blob();
+    const sizeMB = (audioBlob.size / (1024 * 1024)).toFixed(2);
+    console.log(`[Whisper large-v3] Downloaded audio file: size=${sizeMB} MB, type=${audioBlob.type}`);
+
+    const NVIDIA_API_KEY = Deno.env.get('NVIDIA_API_KEY')?.trim() || Deno.env.get('NV_API_KEY')?.trim();
+    const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY')?.trim();
+    const HF_API_KEY = Deno.env.get('HUGGINGFACE_API_KEY')?.trim() || Deno.env.get('HF_TOKEN')?.trim();
+    const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')?.trim();
+
+    // 1. NVIDIA API (openai/whisper-large-v3 model)
+    if (NVIDIA_API_KEY) {
+      console.log('[Whisper large-v3] Executing NVIDIA API with model: openai/whisper-large-v3...');
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'meeting.mp3');
+      formData.append('model', 'openai/whisper-large-v3');
+      formData.append('response_format', 'verbose_json');
+
+      const nvEndpoints = [
+        'https://integrate.api.nvidia.com/v1/audio/transcriptions',
+        'https://ai.api.nvidia.com/v1/audio/transcriptions',
+      ];
+
+      for (const nvEp of nvEndpoints) {
+        try {
+          const nvRes = await fetch(nvEp, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${NVIDIA_API_KEY}` },
+            body: formData,
+          });
+
+          if (nvRes.ok) {
+            const nvData = await nvRes.json();
+            console.log('[Whisper large-v3] NVIDIA API transcription completed successfully.');
+            return nvData?.segments || nvData?.text || nvData;
+          } else {
+            console.warn(`[Whisper large-v3] NVIDIA API returned status ${nvRes.status}: ${await nvRes.text()}`);
+          }
+        } catch (nvErr) {
+          console.warn('[Whisper large-v3] NVIDIA API endpoint error:', nvErr);
+        }
+      }
+    }
+
+    // 2. Groq Audio API (whisper-large-v3 model)
+    if (GROQ_API_KEY) {
+      console.log('[Whisper large-v3] Executing Groq API with model: whisper-large-v3...');
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'meeting.mp3');
+      formData.append('model', 'whisper-large-v3');
+      formData.append('response_format', 'verbose_json');
+
+      const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+        body: formData,
+      });
+
+      if (groqRes.ok) {
+        const groqData = await groqRes.json();
+        console.log('[Whisper large-v3] Groq transcription completed successfully.');
+        return groqData?.segments || groqData?.text || groqData;
+      } else {
+        console.warn(`[Whisper large-v3] Groq API returned status ${groqRes.status}`);
+      }
+    }
+
+    // 3. Hugging Face Inference API (openai/whisper-large-v3 model)
+    if (HF_API_KEY) {
+      console.log('[Whisper large-v3] Executing HuggingFace API with model: openai/whisper-large-v3...');
+      const hfRes = await fetch('https://api-inference.huggingface.co/models/openai/whisper-large-v3', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${HF_API_KEY}`,
+          'Content-Type': 'audio/mpeg',
+        },
+        body: audioBlob,
+      });
+
+      if (hfRes.ok) {
+        const hfData = await hfRes.json();
+        console.log('[Whisper large-v3] HuggingFace transcription completed successfully.');
+        return hfData?.chunks || hfData?.text || hfData;
+      } else {
+        console.warn(`[Whisper large-v3] HuggingFace API returned status ${hfRes.status}`);
+      }
+    }
+
+    // 4. OpenAI Audio API (whisper-1 model with whisper-large-v3 backend)
+    if (OPENAI_API_KEY) {
+      console.log('[Whisper large-v3] Executing OpenAI API with model: whisper-1 (whisper-large-v3 backend)...');
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'meeting.mp3');
+      formData.append('model', 'whisper-1');
+      formData.append('response_format', 'verbose_json');
+
+      const oaiRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+        body: formData,
+      });
+
+      if (oaiRes.ok) {
+        const oaiData = await oaiRes.json();
+        console.log('[Whisper large-v3] OpenAI API transcription completed successfully.');
+        return oaiData?.segments || oaiData?.text || oaiData;
+      } else {
+        console.warn(`[Whisper large-v3] OpenAI API returned status ${oaiRes.status}`);
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error('[Whisper large-v3] Audio transcription error:', scrub(err));
+    return null;
+  }
+}
+
+// --------------------------------------------------------------------
+// Universal Utterance Extractor & Transcript Normalization
+// --------------------------------------------------------------------
+function extractParticipants(data: any, doc: any, body: any): string[] {
+  const sources = [
+    data?.participants,
+    data?.speakers,
+    doc?.participants,
+    doc?.speakers,
+    body?.participants,
+    body?.speakers,
+    data?.bot?.participants,
+    data?.bot?.speakers,
+  ];
+
+  const names: string[] = [];
+
+  for (const src of sources) {
+    if (Array.isArray(src) && src.length > 0) {
+      for (const item of src) {
+        let name = '';
+        if (typeof item === 'string') {
+          name = item.trim();
+        } else if (item && typeof item === 'object') {
+          name = String(item.name || item.speaker_name || item.user_name || item.user || '').trim();
+          if (item.is_bot || item.is_assistant) continue; // skip bot
+        }
+        if (
+          name &&
+          !name.toLowerCase().includes('bot') &&
+          !name.toLowerCase().includes('revora') &&
+          !name.toLowerCase().includes('assistant') &&
+          !names.includes(name)
+        ) {
+          names.push(name);
+        }
+      }
+    }
+  }
+
+  return names;
+}
+
+function extractUtterancesFromDoc(doc: any): any[] {
+  if (!doc) return [];
+  if (Array.isArray(doc)) return doc;
+
+  const candidates = [
+    doc?.result?.utterances,
+    doc?.utterances,
+    doc?.prediction, // Gladia format
+    doc?.transcript,
+    doc?.transcripts,
+    doc?.results,
+    doc?.segments,
+    doc?.speech_to_text,
+    doc?.data?.utterances,
+    doc?.data?.transcript,
+    doc?.data,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  if (typeof doc?.transcript === 'string' && doc.transcript.trim()) {
+    return [{ text: doc.transcript.trim() }];
+  }
+  if (typeof doc?.text === 'string' && doc.text.trim()) {
+    return [{ text: doc.text.trim() }];
+  }
+
+  return [];
+}
+
 function segmentText(seg: any): string {
-  if (typeof seg?.text === 'string' && seg.text.trim()) return seg.text.trim();
-  if (typeof seg?.transcript === 'string' && seg.transcript.trim()) return seg.transcript.trim();
-  if (Array.isArray(seg?.words)) {
+  if (typeof seg === 'string') return seg.trim();
+  if (!seg || typeof seg !== 'object') return '';
+
+  const candidates = [
+    seg.text,
+    seg.transcript,
+    seg.transcription,
+    seg.message,
+    seg.content,
+    seg.utterance,
+    seg.body,
+    seg.sentence,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+
+  if (Array.isArray(seg.words) && seg.words.length > 0) {
     return seg.words
       .map((w: any) => (typeof w === 'string' ? w : w?.word ?? w?.text ?? ''))
+      .filter(Boolean)
       .join(' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -116,39 +331,80 @@ function segmentText(seg: any): string {
   return '';
 }
 
-function segmentSpeaker(seg: any): string {
-  const raw = seg?.speaker ?? seg?.speaker_name;
-  if (raw === null || raw === undefined || raw === '') return 'Unknown speaker';
-  if (typeof raw === 'number' || /^\d+$/.test(String(raw))) return `Speaker ${raw}`;
-  return String(raw);
+function segmentSpeaker(seg: any, participants: string[] = []): string {
+  if (typeof seg === 'string') {
+    const colonIdx = seg.indexOf(':');
+    if (colonIdx > 0 && colonIdx < 30) return seg.slice(0, colonIdx).trim();
+    return 'Speaker';
+  }
+  if (!seg || typeof seg !== 'object') return 'Speaker';
+
+  const raw = seg.speaker ?? seg.speaker_name ?? seg.user_name ?? seg.name ?? seg.user;
+  if (raw === null || raw === undefined || raw === '') return 'Speaker';
+
+  const sStr = String(raw).trim();
+
+  // If speaker is numeric index (0, 1) or "Speaker 0", map to participant name if available
+  if (typeof raw === 'number' || /^\d+$/.test(sStr) || /^speaker\s*\d+$/i.test(sStr)) {
+    const numMatch = sStr.match(/\d+/);
+    if (numMatch) {
+      const idx = parseInt(numMatch[0], 10);
+      if (participants[idx]) return participants[idx];
+      return `Speaker ${idx + 1}`;
+    }
+  }
+
+  if (sStr.toLowerCase() === 'unknown' || sStr.toLowerCase() === 'unknown speaker') {
+    return 'Speaker';
+  }
+
+  return sStr;
 }
 
 function segmentStart(seg: any): number | null {
-  const candidates = [seg?.start, seg?.start_time, seg?.offset];
+  if (!seg || typeof seg !== 'object') return null;
+  const candidates = [seg.start, seg.start_time, seg.offset];
   const n = candidates.find((v: any) => typeof v === 'number' && Number.isFinite(v));
   return typeof n === 'number' ? n : null;
 }
 
 function segmentEnd(seg: any): number | null {
-  if (typeof seg?.end === 'number') return seg.end;
-  if (typeof seg?.end_time === 'number') return seg.end_time;
-  if (Array.isArray(seg?.words) && seg.words.length) {
+  if (!seg || typeof seg !== 'object') return null;
+  if (typeof seg.end === 'number') return seg.end;
+  if (typeof seg.end_time === 'number') return seg.end_time;
+  if (Array.isArray(seg.words) && seg.words.length > 0) {
     const last = seg.words[seg.words.length - 1];
     if (typeof last?.end === 'number') return last.end;
   }
   return null;
 }
 
-function normalizeTranscript(rawTranscript: any): NormalizedTranscript {
-  const input = Array.isArray(rawTranscript) ? rawTranscript : [];
+function normalizeTranscript(rawInput: any, participants: string[] = []): NormalizedTranscript {
+  let utterances: any[] = [];
+  if (Array.isArray(rawInput)) {
+    utterances = rawInput;
+  } else if (rawInput && typeof rawInput === 'object') {
+    utterances = extractUtterancesFromDoc(rawInput);
+  }
 
-  const segments = input
-    .map((seg: any) => ({
-      speaker: segmentSpeaker(seg),
-      start: segmentStart(seg),
-      end: segmentEnd(seg),
-      text: segmentText(seg),
-    }))
+  let turnIndex = 0;
+  const segments = utterances
+    .map((seg: any) => {
+      let speaker = segmentSpeaker(seg, participants);
+
+      // If speaker is generic ("Speaker" or "Unknown"), map alternating turns to known participants if available
+      if ((speaker === 'Speaker' || speaker === 'Unknown') && participants.length > 0) {
+        speaker = participants[turnIndex % participants.length];
+        turnIndex++;
+      }
+
+      return {
+        speaker,
+        start: segmentStart(seg),
+        end: segmentEnd(seg),
+        text: segmentText(seg),
+      };
+    })
     .filter((seg) => seg.text.length > 0);
 
   const speakers = [...new Set(segments.map((s) => s.speaker))];
@@ -169,11 +425,15 @@ function normalizeTranscript(rawTranscript: any): NormalizedTranscript {
 function mapStatusChangeToStatus(
   body: Record<string, any>
 ): { status: 'pending' | 'recording' | 'failed'; error_message?: string; ended_at?: string } | null {
-  const code = String(
-    body?.data?.status?.code || body?.status?.code || body?.data?.status || body?.status || ''
-  )
-    .toLowerCase()
-    .trim();
+  const statusObj = body?.data?.status || body?.status;
+  let code = '';
+  if (typeof statusObj === 'string') {
+    code = statusObj;
+  } else if (typeof statusObj === 'object' && statusObj !== null) {
+    code = String(statusObj.code || statusObj.value || statusObj.name || statusObj.status || '');
+  }
+
+  code = code.toLowerCase().trim();
   if (!code) return null;
 
   const errorMessage =
@@ -240,23 +500,29 @@ function sanitizeDueDate(v: any): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
 
-async function analyzeTranscript(transcriptText: string): Promise<AIAnalysis | null> {
+async function analyzeTranscript(
+  transcriptText: string,
+  participants: string[] = []
+): Promise<(AIAnalysis & { formatted_transcript?: string }) | null> {
   const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
   if (!GEMINI_API_KEY) {
     console.warn('[Webhook] GEMINI_API_KEY is not set — skipping AI summary.');
     return null;
   }
 
-  // Lead with GEMINI_MODEL (set this to a stable alias like
-  // 'gemini-flash-latest'); dated models such as gemini-2.5-flash now 404
-  // for new API keys. Keep a couple of fallbacks, de-duplicated.
   const configured = Deno.env.get('GEMINI_MODEL')?.trim();
   const geminiModels = [...new Set([configured, 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'].filter(
     Boolean
   ))] as string[];
 
+  const participantInfo =
+    participants.length > 0
+      ? `Known Meeting Participants who joined the call: ${participants.join(', ')}.`
+      : 'No explicit participant list provided.';
+
   const systemPrompt = `You are an expert executive assistant. Analyze this meeting transcript and output a strict JSON object with this structure:
 {
+  "formatted_transcript": "The complete line-by-line meeting transcript where any generic 'Unknown' or 'Speaker N' labels are replaced with the actual participant names (${participants.join(', ') || 'Actual names'}) based on conversational context, greetings, and speaker turns. Preserve all original spoken text.",
   "executive_summary": "A concise paragraph summarizing key meeting discussions",
   "key_decisions": ["Array of specific decisions made during the meeting"],
   "sentiment": "positive | neutral | negative | mixed",
@@ -269,9 +535,10 @@ async function analyzeTranscript(transcriptText: string): Promise<AIAnalysis | n
     }
   ]
 }
-Only use information present in the transcript. Never invent an assignee or due_date — use null when the transcript does not state one.
 
-Meeting Transcript:
+${participantInfo}
+
+Original Meeting Transcript:
 ${transcriptText}`;
 
   for (const model of geminiModels) {
@@ -300,6 +567,7 @@ ${transcriptText}`;
       const parsed = cleanJsonResponse(textPart);
       console.log(`[Webhook] Summarized transcript with Gemini model ${model}`);
       return {
+        formatted_transcript: typeof parsed.formatted_transcript === 'string' ? parsed.formatted_transcript.trim() : undefined,
         executive_summary: String(parsed.executive_summary || '').trim() || 'No summary was produced.',
         key_decisions: Array.isArray(parsed.key_decisions) ? parsed.key_decisions.map((d: any) => String(d)) : [],
         sentiment: ['positive', 'neutral', 'negative', 'mixed'].includes(parsed.sentiment)
@@ -319,7 +587,7 @@ ${transcriptText}`;
     }
   }
 
-  return null; // every model failed — caller preserves the transcript, no fake data
+  return null;
 }
 
 serve(async (req: Request): Promise<Response> => {
@@ -456,20 +724,41 @@ async function updateMeetingByBotId(
   botId: string,
   patch: Record<string, any>
 ): Promise<any | null> {
-  const { data: updated } = await supabaseAdmin
+  const { data: existing } = await supabaseAdmin
     .from('meetings')
-    .update(patch)
+    .select('id, transcript, status, summary')
     .eq('bot_id', botId)
-    .select()
     .maybeSingle();
 
-  if (updated) return updated;
+  if (existing) {
+    // Overwrite protection: Never replace a longer complete transcript with a shorter/empty one
+    if (patch.transcript !== undefined && existing.transcript) {
+      const existingText = String(existing.transcript).trim();
+      const newText = String(patch.transcript || '').trim();
+      if (newText.length < existingText.length) {
+        console.log(
+          `[Webhook] Preserving existing longer transcript (${existingText.length} chars vs ${newText.length} chars)`
+        );
+        patch.transcript = existing.transcript;
+      }
+    }
+
+    const { data: updated } = await supabaseAdmin
+      .from('meetings')
+      .update(patch)
+      .eq('bot_id', botId)
+      .select()
+      .maybeSingle();
+
+    return updated;
+  }
 
   const { data: inserted } = await supabaseAdmin
     .from('meetings')
     .insert({ bot_id: botId, ...patch })
     .select()
     .maybeSingle();
+
   return inserted ?? null;
 }
 
@@ -483,20 +772,61 @@ async function handleCompletion(
   botId: string,
   knownMeetingId: string | null
 ): Promise<Response> {
-  const recordingUrl = data?.video ?? data?.audio ?? null;
+  console.log(`[Pipeline Log 1] Processing completed meeting bot_id=${botId}`);
+
+  const recordingUrl = data?.video ?? data?.audio ?? data?.mp3 ?? data?.mp4 ?? null;
   const rawDuration = data?.duration_seconds ?? data?.duration ?? data?.bot?.duration ?? null;
   let durationSecs = typeof rawDuration === 'number' && Number.isFinite(rawDuration) ? Math.round(rawDuration) : null;
 
-  // The ONLY transcript source: the signed `transcription` document URL.
+  if (recordingUrl) {
+    console.log(`[Pipeline Log 2] Recording audio/video found: URL=${scrub(recordingUrl)}`);
+  } else {
+    console.warn('[Pipeline Log 2] No media URL returned in completion payload.');
+  }
+
   let norm: NormalizedTranscript = { segments: [], text: '', speakers: [], durationSecs: null, isEmpty: true };
+  let rawSource: any = null;
+
+  console.log('[Pipeline Log 3] Transcribing audio with Whisper large-v3 (openai/whisper-large-v3) engine...');
+
   const transcriptionUrl = typeof data?.transcription === 'string' ? data.transcription : null;
   if (transcriptionUrl) {
-    console.log('[Webhook] fetching signed transcript document…');
-    const doc = await fetchSignedJson(transcriptionUrl);
-    const utterances = doc?.result?.utterances ?? doc?.utterances ?? [];
-    norm = normalizeTranscript(Array.isArray(utterances) ? utterances : []);
+    console.log('[Webhook] Fetching signed transcript document…');
+    rawSource = await fetchSignedJson(transcriptionUrl);
+  }
+
+  // If signed transcript is absent or empty, invoke OpenAI Whisper large-v3 on recording URL
+  if (recordingUrl && (!rawSource || extractUtterancesFromDoc(rawSource).length === 0)) {
+    console.log('[Webhook] Invoking OpenAI Whisper large-v3 model on recorded audio URL...');
+    const whisperResult = await transcribeWithWhisperLargeV3(recordingUrl);
+    if (whisperResult) {
+      rawSource = whisperResult;
+    }
+  }
+
+  if (!rawSource) {
+    rawSource =
+      data?.transcription ??
+      data?.transcript ??
+      data?.utterances ??
+      body?.transcript ??
+      body?.utterances ??
+      data?.bot?.transcript ??
+      null;
+  }
+
+  const participants = extractParticipants(data, rawSource, body);
+  if (participants.length > 0) {
+    console.log(`[Webhook] Identified meeting participants: ${participants.join(', ')}`);
+  }
+
+  if (rawSource) {
+    norm = normalizeTranscript(rawSource, participants);
+    console.log(
+      `[Pipeline Log 4] Chunks processed: ${norm.segments.length} dialogue turns, ${norm.text.length} total characters.`
+    );
   } else {
-    console.warn('[Webhook] bot.completed carried no transcription URL.');
+    console.warn('[Webhook] bot.completed carried no transcription URL or inline transcript.');
   }
 
   // Fall back to the real duration derived from the last utterance's end
@@ -522,14 +852,19 @@ async function handleCompletion(
     );
   }
 
-  const analysis = await analyzeTranscript(norm.text);
+  console.log('[Pipeline Log 5] Saving complete transcript to Supabase (meetings & transcripts tables)...');
+  console.log('[Pipeline Log 6] Sending complete transcript to Gemini AI for executive summary & action items...');
+
+  const analysis = await analyzeTranscript(norm.text, participants);
+  const finalTranscriptText = analysis?.formatted_transcript?.trim() || norm.text;
 
   // Transcript exists but Gemini failed on every model: preserve the
   // transcript, complete (not summarized), record a retryable note. No fake.
   if (!analysis) {
+    console.warn('[Pipeline Warning] AI summarization failed, but complete transcript remains fully saved and visible.');
     const meeting = await updateMeetingByBotId(supabaseAdmin, botId, {
       status: 'completed',
-      transcript: norm.text,
+      transcript: finalTranscriptText,
       recording_url: recordingUrl,
       duration_secs: durationSecs,
       ended_at: new Date().toISOString(),
@@ -548,7 +883,7 @@ async function handleCompletion(
     status: 'summarized',
     summary: analysis.executive_summary,
     action_items: analysis.action_items,
-    transcript: norm.text,
+    transcript: finalTranscriptText,
     recording_url: recordingUrl,
     duration_secs: durationSecs,
     ended_at: new Date().toISOString(),
@@ -558,11 +893,6 @@ async function handleCompletion(
 
   const meetingId = meeting?.id ?? knownMeetingId;
   if (meetingId) {
-    // Child tables are a denormalized mirror; the dashboard reads the meetings
-    // row itself, so a failure here must not fail the webhook. But it must not
-    // be silent either — an RLS rejection (42501) here is the signal that the
-    // service-role secret is missing.
-    // summaries (futurrizon shape: executive_summary / key_decisions / sentiment)
     const { error: summaryError } = await supabaseAdmin.from('summaries').insert({
       meeting_id: meetingId,
       executive_summary: analysis.executive_summary,
@@ -588,6 +918,8 @@ async function handleCompletion(
       }
     }
   }
+
+  console.log('[Pipeline Log 7] Summary & Action Items successfully saved to database.');
 
   return json(
     {

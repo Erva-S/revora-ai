@@ -365,8 +365,13 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
 
               {selectedMeeting.transcript && (
                 <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
-                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
+                    <span className="text-[11px] font-mono text-black/50">
+                      {selectedMeeting.transcript.split('\n').filter(Boolean).length} dialogue turns • {selectedMeeting.transcript.length} characters
+                    </span>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[350px] overflow-y-auto shadow-inner">
                     {selectedMeeting.transcript}
                   </div>
                 </div>

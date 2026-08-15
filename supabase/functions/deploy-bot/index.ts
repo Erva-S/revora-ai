@@ -179,41 +179,58 @@ serve(async (req: Request): Promise<Response> => {
 
     const webhookUrl = buildWebhookUrl();
     const webhookSecret = sanitizeKey(Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET'));
+    const botName = Deno.env.get('BOT_NAME')?.trim() || 'Revora Assistant';
+    const entryMessage =
+      Deno.env.get('BOT_ENTRY_MESSAGE')?.trim() ||
+      "Hi, I'm an AI assistant here to take notes for this meeting.";
+    const sttProvider = transcriptionProvider();
+    const botImageUrl = Deno.env.get('BOT_IMAGE_URL')?.trim() || undefined;
 
-    // v2 create-bot body (schema: CreateBotRequestBodyInput). Recording is
-    // automatic once the bot joins; transcription/callback/leave are explicit.
     const clampTimeout = (name: string, fallback: number): number => {
       const n = Number(Deno.env.get(name));
       return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
     };
+
+    const waitingRoomTimeout = clampTimeout('BOT_WAITING_ROOM_TIMEOUT', 300);
+    const noOneJoinedTimeout = clampTimeout('BOT_NO_ONE_JOINED_TIMEOUT', 120);
+    const silenceTimeout = clampTimeout('BOT_SILENCE_TIMEOUT', 30);
+
+    // Hybrid dual-compatible payload containing both v1 and v2 property specifications.
+    // v1 properties: webhook_url, speech_to_text, automatic_leave
+    // v2 properties: callback_enabled/config, transcription_enabled/config, timeout_config
     const baasPayload = {
       meeting_url: meetingUrl,
-      bot_name: Deno.env.get('BOT_NAME')?.trim() || 'Revora Assistant',
-      // recording_mode only picks the layout; recording itself is automatic.
+      bot_name: botName,
       recording_mode: 'speaker_view',
-      // The auto message the bot posts in chat when it joins.
-      entry_message:
-        Deno.env.get('BOT_ENTRY_MESSAGE')?.trim() ||
-        "Hi, I'm an AI assistant here to take notes for this meeting.",
-      // Turn transcription ON (off by default in v2) and pick the provider.
+      entry_message: entryMessage,
+      ...(botImageUrl ? { bot_image: botImageUrl } : {}),
+
+      // v1 specification
+      webhook_url: webhookUrl,
+      speech_to_text: {
+        provider: sttProvider,
+      },
+      automatic_leave: {
+        waiting_room_timeout: waitingRoomTimeout,
+        no_one_joined_timeout: noOneJoinedTimeout,
+        silence_timeout: silenceTimeout,
+      },
+
+      // v2 specification
       transcription_enabled: true,
       transcription_config: {
-        provider: transcriptionProvider(),
+        provider: sttProvider,
       },
-      // Where MeetingBaaS POSTs bot.status_change / bot.completed / bot.failed.
       callback_enabled: true,
       callback_config: {
         url: webhookUrl,
         method: 'POST',
-        // Optional shared secret, echoed back to us in the x-mb-secret header.
         ...(webhookSecret ? { secret: webhookSecret } : {}),
       },
-      // Real meeting-end detection: the bot leaves after `silence_timeout`
-      // seconds of no audio (i.e. once everyone has left) — not a fixed clock.
       timeout_config: {
-        waiting_room_timeout: clampTimeout('BOT_WAITING_ROOM_TIMEOUT', 600),
-        no_one_joined_timeout: clampTimeout('BOT_NO_ONE_JOINED_TIMEOUT', 600),
-        silence_timeout: clampTimeout('BOT_SILENCE_TIMEOUT', 600),
+        waiting_room_timeout: waitingRoomTimeout,
+        no_one_joined_timeout: noOneJoinedTimeout,
+        silence_timeout: silenceTimeout,
       },
     };
 
@@ -221,50 +238,75 @@ serve(async (req: Request): Promise<Response> => {
     let dispatchError: string | null = null;
 
     if (cleanKey && !cleanKey.includes('your_meetingbaas_key_here')) {
-      const endpoint = `${meetingBaasBaseUrl()}/v2/bots`;
-      try {
-        console.log(`[Deploy-Bot] POSTing request to ${endpoint}...`);
-        const baasResp = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-meeting-baas-api-key': cleanKey,
-          },
-          body: JSON.stringify(baasPayload),
-        });
+      const baseUrl = meetingBaasBaseUrl();
+      // Determine primary and secondary endpoints.
+      // If MEETINGBAAS_API_BASE_URL explicitly ends with /v1, try v1 first then v2 fallback.
+      // Otherwise, default to v2 first (for v2 keys) then v1 fallback.
+      const rawEnvUrl = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || '').trim();
+      const preferV1 = /\/v1\/?$/i.test(rawEnvUrl);
 
-        const rawText = await baasResp.text();
-        let baasData: any = {};
+      const endpoints = preferV1
+        ? [`${baseUrl}/v1/bots`, `${baseUrl}/bots`, `${baseUrl}/v2/bots`]
+        : [`${baseUrl}/v2/bots`, `${baseUrl}/v1/bots`, `${baseUrl}/bots`];
+
+      const cleanEndpoints = [...new Set(endpoints)];
+
+      for (const endpoint of cleanEndpoints) {
         try {
-          baasData = rawText ? JSON.parse(rawText) : {};
-        } catch {
-          baasData = { message: rawText };
-        }
-
-        if (!baasResp.ok) {
-          dispatchError = readResponseError(baasResp.status, rawText);
-          console.error('[Deploy-Bot Error] MeetingBaaS rejected the bot request:', {
-            endpoint,
-            status: baasResp.status,
-            body: rawText,
+          console.log(`[Deploy-Bot] POSTing dispatch request to ${endpoint}...`);
+          const baasResp = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-meeting-baas-api-key': cleanKey,
+            },
+            body: JSON.stringify(baasPayload),
           });
-        } else {
-          // v2 envelope: { success, data: { bot_id } }. Keep flat fallbacks.
-          botId = String(baasData?.data?.bot_id || baasData.bot_id || baasData.id || '').trim();
-          if (!botId) {
-            dispatchError = `MeetingBaaS returned a successful response without a bot_id: ${rawText || '<empty response>'}`;
-            console.error('[Deploy-Bot Error] Missing bot_id in MeetingBaaS response:', {
+
+          const rawText = await baasResp.text();
+          let baasData: any = {};
+          try {
+            baasData = rawText ? JSON.parse(rawText) : {};
+          } catch {
+            baasData = { message: rawText };
+          }
+
+          if (!baasResp.ok) {
+            const errDetail = readResponseError(baasResp.status, rawText);
+            console.warn(`[Deploy-Bot Warning] Endpoint ${endpoint} returned HTTP ${baasResp.status}:`, rawText);
+
+            // If we hit wrong platform key or 404, attempt next endpoint fallback in list
+            if (
+              (baasResp.status === 401 && rawText.includes('WrongPlatformApiKey')) ||
+              baasResp.status === 404
+            ) {
+              dispatchError = errDetail;
+              continue;
+            }
+
+            dispatchError = errDetail;
+            console.error('[Deploy-Bot Error] MeetingBaaS rejected bot request:', {
               endpoint,
               status: baasResp.status,
               body: rawText,
             });
+            break;
           } else {
-            console.log(`[Deploy-Bot Success] Real bot launched: bot_id=${botId}`);
+            // Envelope format check: v2 uses data.bot_id, v1 uses bot_id or id directly
+            botId = String(baasData?.data?.bot_id || baasData?.bot_id || baasData?.id || '').trim();
+            if (!botId) {
+              dispatchError = `MeetingBaaS returned HTTP ${baasResp.status} without a valid bot_id: ${rawText || '<empty response>'}`;
+              console.error('[Deploy-Bot Error] Missing bot_id in response from:', endpoint);
+            } else {
+              console.log(`[Deploy-Bot Success] Bot launched via ${endpoint}: bot_id=${botId}`);
+              dispatchError = null;
+              break;
+            }
           }
+        } catch (netErr: any) {
+          dispatchError = netErr?.message || String(netErr) || 'MeetingBaaS network request failed';
+          console.error(`[Deploy-Bot Network Error] Unable to reach ${endpoint}:`, netErr);
         }
-      } catch (netErr: any) {
-        dispatchError = netErr?.message || String(netErr) || 'MeetingBaaS request failed';
-        console.error('[Deploy-Bot Network Error] Unable to reach MeetingBaaS:', netErr);
       }
     } else {
       dispatchError = 'MEETINGBAAS_API_KEY is missing or invalid';

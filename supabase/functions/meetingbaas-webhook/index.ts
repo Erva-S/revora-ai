@@ -7,15 +7,12 @@
 //   bot.status_change -> map data.status.code onto our meeting status
 //   bot.failed        -> mark the meeting failed with the real error
 //   bot.completed     -> fetch the REAL transcript from the signed
-//                        `transcription` URL, run Gemini over it, and
-//                        persist meetings + summaries + transcripts +
-//                        action_items with REAL data.
-//
-// There is NO fabricated transcript or summary anywhere: if a meeting
-// produced no speech, it completes honestly with an explanatory note and
-// no AI is run. Recording is automatic in v2; the bot leaves on
-// timeout_config.silence_timeout (configured in deploy-bot), so there is
-// no fixed timer here.
+//                        `transcription` URL (MeetingBaaS built-in STT), or fall
+//                        back to Whisper large-v3 ONLY if that is empty and a
+//                        provider key is configured; map speakers using MeetingBaaS
+//                        participant metadata & diarization, merge segments
+//                        chronologically, run Gemini AI, and persist
+//                        meetings + summaries + transcripts + action_items.
 // ====================================================================
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
@@ -34,10 +31,6 @@ function json(body: unknown, status: number): Response {
   });
 }
 
-// Redact URL query strings before logging an error. Deno's fetch embeds
-// the full request URL in thrown network errors — which for us can carry
-// the Gemini `?key=` API key or a signed transcript URL's signature. Keep
-// the host/path for debugging; drop the query. Never log raw error objects.
 function scrub(v: unknown): string {
   const s = v instanceof Error ? v.message || v.name : String(v ?? '');
   return s.replace(/(https?:\/\/[^\s)'"]+)/g, (u) => {
@@ -71,15 +64,26 @@ type NormalizedTranscript = {
   speakers: string[];
   durationSecs: number | null;
   isEmpty: boolean;
+  metrics: {
+    audioDurationSecs: number | null;
+    numChunks: number;
+    segmentsPerChunk: number[];
+    totalWhisperSegments: number;
+    speakerIdsDetected: any[];
+    speakerMap: Record<string, string>;
+    finalLinesCount: number;
+    segmentsDiscardedCount: number;
+  };
+};
+
+type SpeakerMetadata = {
+  humanParticipants: string[];
+  idToNameMap: Map<string | number, string>;
+  rawSpeakerIdsDetected: any[];
 };
 
 // --------------------------------------------------------------------
 // Signed-artifact fetch
-//
-// v2 bot.completed carries a pre-signed `transcription` URL (valid ~4h).
-// These are storage-signed URLs: they take NO API key — attaching the
-// x-meeting-baas-api-key header would only break the signature. The URL
-// embeds a signature, so we deliberately DON'T log it.
 // --------------------------------------------------------------------
 async function fetchSignedJson(url: string): Promise<any | null> {
   try {
@@ -97,127 +101,235 @@ async function fetchSignedJson(url: string): Promise<any | null> {
 }
 
 // --------------------------------------------------------------------
-// OpenAI Whisper large-v3 Model Transcriber (NVIDIA / Groq / HF / OpenAI)
+// Fetch Diarization Timeline (JSON / JSONL)
 // --------------------------------------------------------------------
-async function transcribeWithWhisperLargeV3(audioUrl: string): Promise<any | null> {
+async function fetchDiarizationTimeline(
+  diarizationUrl: string | null
+): Promise<Array<{ start: number; end: number; speakerId: any; speakerName?: string }>> {
+  if (!diarizationUrl) return [];
+  try {
+    const res = await fetch(diarizationUrl, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) return [];
+    const text = await res.text();
+    if (!text.trim()) return [];
+
+    const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    const timeline: Array<{ start: number; end: number; speakerId: any; speakerName?: string }> = [];
+
+    for (const line of lines) {
+      try {
+        const item = JSON.parse(line);
+        const start = Number(item.start ?? item.start_time ?? item.offset ?? 0);
+        const end = Number(item.end ?? item.end_time ?? start + 1);
+        // MeetingBaaS diarization JSONL uses `speaker` for the real participant NAME
+        // (e.g. "Ridhhi Thummar") and `user_id` for the numeric cluster id. Other/older
+        // formats use `speaker` as a numeric id, so classify by shape rather than assume.
+        const rawSpeaker = item.speaker;
+        const rawSpeakerIsName = typeof rawSpeaker === 'string' && !/^\d+$/.test(rawSpeaker.trim());
+        const speakerName =
+          item.speaker_name ?? item.name ?? item.user_name ?? (rawSpeakerIsName ? rawSpeaker : undefined);
+        const speakerId = item.speaker_id ?? item.user_id ?? item.id ?? (rawSpeakerIsName ? undefined : rawSpeaker);
+        if (Number.isFinite(start)) {
+          timeline.push({ start, end, speakerId, speakerName });
+        }
+      } catch (_) {
+        // Ignore unparseable line
+      }
+    }
+    return timeline;
+  } catch (err) {
+    console.warn('[Webhook] Diarization timeline fetch notice:', scrub(err));
+    return [];
+  }
+}
+
+// --------------------------------------------------------------------
+// OpenAI Whisper large-v3 Model Transcriber (NVIDIA / Groq / HF / OpenAI)
+// Supports multi-chunk audio processing for long meetings
+// --------------------------------------------------------------------
+type WhisperFetchResult = {
+  rawSegments: any[];
+  numChunks: number;
+  segmentsPerChunk: number[];
+  totalSegments: number;
+  audioDurationSecs: number | null;
+};
+
+async function transcribeWithWhisperLargeV3(audioUrl: string): Promise<WhisperFetchResult | null> {
   console.log(`[Whisper large-v3] Fetching audio binary from ${scrub(audioUrl)}...`);
   try {
-    const audioRes = await fetch(audioUrl, { signal: AbortSignal.timeout(60000) });
+    const audioRes = await fetch(audioUrl, { signal: AbortSignal.timeout(120000) });
     if (!audioRes.ok) {
       console.warn(`[Whisper large-v3] Audio fetch HTTP status ${audioRes.status}`);
       return null;
     }
     const audioBlob = await audioRes.blob();
-    const sizeMB = (audioBlob.size / (1024 * 1024)).toFixed(2);
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const totalBytes = arrayBuffer.byteLength;
+    const sizeMB = (totalBytes / (1024 * 1024)).toFixed(2);
     console.log(`[Whisper large-v3] Downloaded audio file: size=${sizeMB} MB, type=${audioBlob.type}`);
+
+    const MAX_CHUNK_BYTES = 20 * 1024 * 1024; // 20 MB safe chunk limit (API limit is 25 MB)
+    const numChunks = Math.max(1, Math.ceil(totalBytes / MAX_CHUNK_BYTES));
+
+    console.log(`[Whisper Pipeline] Audio duration: processing ${sizeMB} MB across ${numChunks} audio chunk(s).`);
 
     const NVIDIA_API_KEY = Deno.env.get('NVIDIA_API_KEY')?.trim() || Deno.env.get('NV_API_KEY')?.trim();
     const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY')?.trim();
     const HF_API_KEY = Deno.env.get('HUGGINGFACE_API_KEY')?.trim() || Deno.env.get('HF_TOKEN')?.trim();
     const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')?.trim();
 
-    // 1. NVIDIA API (openai/whisper-large-v3 model)
-    if (NVIDIA_API_KEY) {
-      console.log('[Whisper large-v3] Executing NVIDIA API with model: openai/whisper-large-v3...');
-      const formData = new FormData();
-      formData.append('file', audioBlob, 'meeting.mp3');
-      formData.append('model', 'openai/whisper-large-v3');
-      formData.append('response_format', 'verbose_json');
+    const allRawSegments: any[] = [];
+    const segmentsPerChunk: number[] = [];
+    let maxEndSecs = 0;
 
-      const nvEndpoints = [
-        'https://integrate.api.nvidia.com/v1/audio/transcriptions',
-        'https://ai.api.nvidia.com/v1/audio/transcriptions',
-      ];
+    for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+      const startByte = chunkIdx * MAX_CHUNK_BYTES;
+      const endByte = Math.min(totalBytes, (chunkIdx + 1) * MAX_CHUNK_BYTES);
+      const chunkBuffer = arrayBuffer.slice(startByte, endByte);
+      const chunkBlob = new Blob([chunkBuffer], { type: audioBlob.type || 'audio/mp3' });
+      const chunkOffsetSecs = chunkIdx * 600; // estimated offset per chunk (~10 mins)
 
-      for (const nvEp of nvEndpoints) {
+      console.log(`[Whisper Pipeline] Transcribing chunk ${chunkIdx + 1}/${numChunks} (${(chunkBlob.size / (1024 * 1024)).toFixed(2)} MB)...`);
+
+      let chunkSegments: any[] = [];
+
+      // 1. NVIDIA API (openai/whisper-large-v3 model)
+      if (NVIDIA_API_KEY && chunkSegments.length === 0) {
+        console.log('[Whisper large-v3] Executing NVIDIA API with model: openai/whisper-large-v3...');
+        const formData = new FormData();
+        formData.append('file', chunkBlob, `meeting_chunk_${chunkIdx}.mp3`);
+        formData.append('model', 'openai/whisper-large-v3');
+        formData.append('response_format', 'verbose_json');
+
+        const nvEndpoints = [
+          'https://integrate.api.nvidia.com/v1/audio/transcriptions',
+          'https://ai.api.nvidia.com/v1/audio/transcriptions',
+        ];
+
+        for (const nvEp of nvEndpoints) {
+          try {
+            const nvRes = await fetch(nvEp, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${NVIDIA_API_KEY}` },
+              body: formData,
+            });
+
+            if (nvRes.ok) {
+              const nvData = await nvRes.json();
+              console.log('[Whisper large-v3] NVIDIA API transcription chunk completed.');
+              const rawSegs = nvData?.segments || (nvData?.text ? [{ text: nvData.text }] : []);
+              chunkSegments = Array.isArray(rawSegs) ? rawSegs : [];
+              break;
+            }
+          } catch (nvErr) {
+            console.warn('[Whisper large-v3] NVIDIA API endpoint error:', nvErr);
+          }
+        }
+      }
+
+      // 2. Groq Audio API (whisper-large-v3 model)
+      if (GROQ_API_KEY && chunkSegments.length === 0) {
+        console.log('[Whisper large-v3] Executing Groq API with model: whisper-large-v3...');
+        const formData = new FormData();
+        formData.append('file', chunkBlob, `meeting_chunk_${chunkIdx}.mp3`);
+        formData.append('model', 'whisper-large-v3');
+        formData.append('response_format', 'verbose_json');
+
         try {
-          const nvRes = await fetch(nvEp, {
+          const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
             method: 'POST',
-            headers: { Authorization: `Bearer ${NVIDIA_API_KEY}` },
+            headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
             body: formData,
           });
 
-          if (nvRes.ok) {
-            const nvData = await nvRes.json();
-            console.log('[Whisper large-v3] NVIDIA API transcription completed successfully.');
-            return nvData?.segments || nvData?.text || nvData;
+          if (groqRes.ok) {
+            const groqData = await groqRes.json();
+            console.log('[Whisper large-v3] Groq transcription chunk completed.');
+            const rawSegs = groqData?.segments || (groqData?.text ? [{ text: groqData.text }] : []);
+            chunkSegments = Array.isArray(rawSegs) ? rawSegs : [];
           } else {
-            console.warn(`[Whisper large-v3] NVIDIA API returned status ${nvRes.status}: ${await nvRes.text()}`);
+            console.warn(`[Whisper large-v3] Groq API returned status ${groqRes.status}`);
           }
-        } catch (nvErr) {
-          console.warn('[Whisper large-v3] NVIDIA API endpoint error:', nvErr);
+        } catch (gErr) {
+          console.warn('[Whisper large-v3] Groq API error:', gErr);
+        }
+      }
+
+      // 3. Hugging Face Inference API (openai/whisper-large-v3 model)
+      if (HF_API_KEY && chunkSegments.length === 0) {
+        console.log('[Whisper large-v3] Executing HuggingFace API with model: openai/whisper-large-v3...');
+        try {
+          const hfRes = await fetch('https://api-inference.huggingface.co/models/openai/whisper-large-v3', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${HF_API_KEY}`,
+              'Content-Type': 'audio/mpeg',
+            },
+            body: chunkBlob,
+          });
+
+          if (hfRes.ok) {
+            const hfData = await hfRes.json();
+            console.log('[Whisper large-v3] HuggingFace transcription chunk completed.');
+            const rawSegs = hfData?.chunks || hfData?.segments || (hfData?.text ? [{ text: hfData.text }] : []);
+            chunkSegments = Array.isArray(rawSegs) ? rawSegs : [];
+          } else {
+            console.warn(`[Whisper large-v3] HuggingFace API returned status ${hfRes.status}`);
+          }
+        } catch (hfErr) {
+          console.warn('[Whisper large-v3] HuggingFace API error:', hfErr);
+        }
+      }
+
+      // 4. OpenAI Audio API (whisper-1 model with whisper-large-v3 backend)
+      if (OPENAI_API_KEY && chunkSegments.length === 0) {
+        console.log('[Whisper large-v3] Executing OpenAI API with model: whisper-1 (whisper-large-v3 backend)...');
+        const formData = new FormData();
+        formData.append('file', chunkBlob, `meeting_chunk_${chunkIdx}.mp3`);
+        formData.append('model', 'whisper-1');
+        formData.append('response_format', 'verbose_json');
+
+        try {
+          const oaiRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+            body: formData,
+          });
+
+          if (oaiRes.ok) {
+            const oaiData = await oaiRes.json();
+            console.log('[Whisper large-v3] OpenAI API transcription chunk completed.');
+            const rawSegs = oaiData?.segments || (oaiData?.text ? [{ text: oaiData.text }] : []);
+            chunkSegments = Array.isArray(rawSegs) ? rawSegs : [];
+          } else {
+            console.warn(`[Whisper large-v3] OpenAI API returned status ${oaiRes.status}`);
+          }
+        } catch (oaiErr) {
+          console.warn('[Whisper large-v3] OpenAI API error:', oaiErr);
+        }
+      }
+
+      segmentsPerChunk.push(chunkSegments.length);
+
+      // Adjust chunk segment timestamps
+      for (const seg of chunkSegments) {
+        if (typeof seg === 'object' && seg !== null) {
+          const s = typeof seg.start === 'number' ? seg.start + chunkOffsetSecs : null;
+          const e = typeof seg.end === 'number' ? seg.end + chunkOffsetSecs : null;
+          if (e && e > maxEndSecs) maxEndSecs = e;
+          allRawSegments.push({ ...seg, start: s, end: e });
         }
       }
     }
 
-    // 2. Groq Audio API (whisper-large-v3 model)
-    if (GROQ_API_KEY) {
-      console.log('[Whisper large-v3] Executing Groq API with model: whisper-large-v3...');
-      const formData = new FormData();
-      formData.append('file', audioBlob, 'meeting.mp3');
-      formData.append('model', 'whisper-large-v3');
-      formData.append('response_format', 'verbose_json');
-
-      const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
-        body: formData,
-      });
-
-      if (groqRes.ok) {
-        const groqData = await groqRes.json();
-        console.log('[Whisper large-v3] Groq transcription completed successfully.');
-        return groqData?.segments || groqData?.text || groqData;
-      } else {
-        console.warn(`[Whisper large-v3] Groq API returned status ${groqRes.status}`);
-      }
-    }
-
-    // 3. Hugging Face Inference API (openai/whisper-large-v3 model)
-    if (HF_API_KEY) {
-      console.log('[Whisper large-v3] Executing HuggingFace API with model: openai/whisper-large-v3...');
-      const hfRes = await fetch('https://api-inference.huggingface.co/models/openai/whisper-large-v3', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${HF_API_KEY}`,
-          'Content-Type': 'audio/mpeg',
-        },
-        body: audioBlob,
-      });
-
-      if (hfRes.ok) {
-        const hfData = await hfRes.json();
-        console.log('[Whisper large-v3] HuggingFace transcription completed successfully.');
-        return hfData?.chunks || hfData?.text || hfData;
-      } else {
-        console.warn(`[Whisper large-v3] HuggingFace API returned status ${hfRes.status}`);
-      }
-    }
-
-    // 4. OpenAI Audio API (whisper-1 model with whisper-large-v3 backend)
-    if (OPENAI_API_KEY) {
-      console.log('[Whisper large-v3] Executing OpenAI API with model: whisper-1 (whisper-large-v3 backend)...');
-      const formData = new FormData();
-      formData.append('file', audioBlob, 'meeting.mp3');
-      formData.append('model', 'whisper-1');
-      formData.append('response_format', 'verbose_json');
-
-      const oaiRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-        body: formData,
-      });
-
-      if (oaiRes.ok) {
-        const oaiData = await oaiRes.json();
-        console.log('[Whisper large-v3] OpenAI API transcription completed successfully.');
-        return oaiData?.segments || oaiData?.text || oaiData;
-      } else {
-        console.warn(`[Whisper large-v3] OpenAI API returned status ${oaiRes.status}`);
-      }
-    }
-
-    return null;
+    return {
+      rawSegments: allRawSegments,
+      numChunks,
+      segmentsPerChunk,
+      totalSegments: allRawSegments.length,
+      audioDurationSecs: maxEndSecs > 0 ? Math.round(maxEndSecs) : null,
+    };
   } catch (err) {
     console.error('[Whisper large-v3] Audio transcription error:', scrub(err));
     return null;
@@ -225,46 +337,141 @@ async function transcribeWithWhisperLargeV3(audioUrl: string): Promise<any | nul
 }
 
 // --------------------------------------------------------------------
-// Universal Utterance Extractor & Transcript Normalization
+// Speaker Metadata Extraction & Mapping
 // --------------------------------------------------------------------
-function extractParticipants(data: any, doc: any, body: any): string[] {
+function buildSpeakerMetadata(data: any, doc: any, body: any): SpeakerMetadata {
   const sources = [
-    data?.participants,
     data?.speakers,
-    doc?.participants,
+    data?.participants,
     doc?.speakers,
-    body?.participants,
+    doc?.participants,
     body?.speakers,
-    data?.bot?.participants,
+    body?.participants,
     data?.bot?.speakers,
+    data?.bot?.participants,
   ];
 
-  const names: string[] = [];
+  const humanParticipants: string[] = [];
+  const idToNameMap = new Map<string | number, string>();
+  const rawSpeakerIdsDetected: any[] = [];
 
   for (const src of sources) {
     if (Array.isArray(src) && src.length > 0) {
       for (const item of src) {
+        if (!item) continue;
+        let id: any = null;
         let name = '';
+        let displayName = '';
+
         if (typeof item === 'string') {
           name = item.trim();
-        } else if (item && typeof item === 'object') {
+        } else if (typeof item === 'object') {
+          id = item.id ?? item.speaker_id ?? item.user_id ?? null;
           name = String(item.name || item.speaker_name || item.user_name || item.user || '').trim();
-          if (item.is_bot || item.is_assistant) continue; // skip bot
+          displayName = String(item.display_name || item.displayname || '').trim();
+          if (item.is_bot || item.is_assistant) continue;
         }
+
+        const lowerName = name.toLowerCase();
         if (
           name &&
-          !name.toLowerCase().includes('bot') &&
-          !name.toLowerCase().includes('revora') &&
-          !name.toLowerCase().includes('assistant') &&
-          !names.includes(name)
+          !lowerName.includes('bot') &&
+          !lowerName.includes('revora') &&
+          !lowerName.includes('assistant') &&
+          !lowerName.includes('ai meeting')
         ) {
-          names.push(name);
+          if (!humanParticipants.includes(name)) {
+            humanParticipants.push(name);
+          }
+
+          if (id !== null && id !== undefined) {
+            rawSpeakerIdsDetected.push(id);
+            idToNameMap.set(String(id), name);
+            idToNameMap.set(Number(id), name);
+            idToNameMap.set(`speaker_${id}`, name);
+            idToNameMap.set(`speaker ${id}`, name);
+            idToNameMap.set(`speaker_${Number(id) - 1}`, name); // 0-indexed fallback
+          }
+
+          if (displayName) {
+            idToNameMap.set(displayName.toLowerCase(), name);
+          }
+          idToNameMap.set(name.toLowerCase(), name);
         }
       }
     }
   }
 
-  return names;
+  return { humanParticipants, idToNameMap, rawSpeakerIdsDetected };
+}
+
+function resolveSpeaker(
+  seg: any,
+  metadata: SpeakerMetadata,
+  diarizationTimeline: Array<{ start: number; end: number; speakerId: any; speakerName?: string }>,
+  defaultSpeaker: string = ''
+): string {
+  const { humanParticipants, idToNameMap } = metadata;
+
+  // 1. Direct speaker attribute on segment
+  const raw = seg.speaker ?? seg.speaker_id ?? seg.speaker_name ?? seg.user_name ?? seg.name ?? seg.user;
+  if (raw !== undefined && raw !== null && raw !== '') {
+    const sStr = String(raw).trim();
+
+    if (idToNameMap.has(sStr)) return idToNameMap.get(sStr)!;
+    if (idToNameMap.has(Number(sStr))) return idToNameMap.get(Number(sStr))!;
+    if (idToNameMap.has(sStr.toLowerCase())) return idToNameMap.get(sStr.toLowerCase())!;
+
+    const numMatch = sStr.match(/\d+/);
+    if (numMatch) {
+      const idx = parseInt(numMatch[0], 10);
+      if (idToNameMap.has(idx)) return idToNameMap.get(idx)!;
+      if (humanParticipants[idx]) return humanParticipants[idx];
+      if (humanParticipants[idx - 1]) return humanParticipants[idx - 1];
+    }
+
+    if (sStr.toLowerCase() !== 'unknown' && sStr.toLowerCase() !== 'speaker') {
+      return sStr;
+    }
+  }
+
+  // 2. Diarization timeline lookup by timestamps
+  const segStart = segmentStart(seg);
+  const segEnd = segmentEnd(seg);
+  if (segStart !== null && diarizationTimeline.length > 0) {
+    const midPoint = segEnd !== null ? (segStart + segEnd) / 2 : segStart;
+    const match = diarizationTimeline.find((d) => midPoint >= d.start - 0.5 && midPoint <= d.end + 0.5);
+    if (match) {
+      if (match.speakerName && idToNameMap.has(match.speakerName.toLowerCase())) {
+        return idToNameMap.get(match.speakerName.toLowerCase())!;
+      }
+      if (match.speakerId !== undefined && match.speakerId !== null) {
+        const sStr = String(match.speakerId);
+        if (idToNameMap.has(sStr)) return idToNameMap.get(sStr)!;
+        if (idToNameMap.has(Number(sStr))) return idToNameMap.get(Number(sStr))!;
+      }
+      if (match.speakerName && match.speakerName.trim()) {
+        return match.speakerName.trim();
+      }
+    }
+  }
+
+  // 3. Single human participant fallback
+  if (humanParticipants.length === 1) {
+    return humanParticipants[0];
+  }
+
+  // 4. Default / Previous Speaker fallback
+  if (defaultSpeaker && humanParticipants.includes(defaultSpeaker)) {
+    return defaultSpeaker;
+  }
+
+  // 5. First Human Participant fallback
+  if (humanParticipants.length > 0) {
+    return humanParticipants[0];
+  }
+
+  return 'Speaker 1';
 }
 
 function extractUtterancesFromDoc(doc: any): any[] {
@@ -331,36 +538,6 @@ function segmentText(seg: any): string {
   return '';
 }
 
-function segmentSpeaker(seg: any, participants: string[] = []): string {
-  if (typeof seg === 'string') {
-    const colonIdx = seg.indexOf(':');
-    if (colonIdx > 0 && colonIdx < 30) return seg.slice(0, colonIdx).trim();
-    return 'Speaker';
-  }
-  if (!seg || typeof seg !== 'object') return 'Speaker';
-
-  const raw = seg.speaker ?? seg.speaker_name ?? seg.user_name ?? seg.name ?? seg.user;
-  if (raw === null || raw === undefined || raw === '') return 'Speaker';
-
-  const sStr = String(raw).trim();
-
-  // If speaker is numeric index (0, 1) or "Speaker 0", map to participant name if available
-  if (typeof raw === 'number' || /^\d+$/.test(sStr) || /^speaker\s*\d+$/i.test(sStr)) {
-    const numMatch = sStr.match(/\d+/);
-    if (numMatch) {
-      const idx = parseInt(numMatch[0], 10);
-      if (participants[idx]) return participants[idx];
-      return `Speaker ${idx + 1}`;
-    }
-  }
-
-  if (sStr.toLowerCase() === 'unknown' || sStr.toLowerCase() === 'unknown speaker') {
-    return 'Speaker';
-  }
-
-  return sStr;
-}
-
 function segmentStart(seg: any): number | null {
   if (!seg || typeof seg !== 'object') return null;
   const candidates = [seg.start, seg.start_time, seg.offset];
@@ -379,48 +556,124 @@ function segmentEnd(seg: any): number | null {
   return null;
 }
 
-function normalizeTranscript(rawInput: any, participants: string[] = []): NormalizedTranscript {
-  let utterances: any[] = [];
-  if (Array.isArray(rawInput)) {
-    utterances = rawInput;
+// --------------------------------------------------------------------
+// Transcript Merging & Normalization Engine
+// --------------------------------------------------------------------
+function normalizeTranscript(
+  rawInput: any,
+  data: any,
+  body: any,
+  diarizationTimeline: Array<{ start: number; end: number; speakerId: any; speakerName?: string }> = [],
+  whisperResult: WhisperFetchResult | null = null
+): NormalizedTranscript {
+  let rawUtterances: any[] = [];
+  if (whisperResult && Array.isArray(whisperResult.rawSegments) && whisperResult.rawSegments.length > 0) {
+    rawUtterances = whisperResult.rawSegments;
+  } else if (Array.isArray(rawInput)) {
+    rawUtterances = rawInput;
   } else if (rawInput && typeof rawInput === 'object') {
-    utterances = extractUtterancesFromDoc(rawInput);
+    rawUtterances = extractUtterancesFromDoc(rawInput);
   }
 
-  let turnIndex = 0;
-  const segments = utterances
-    .map((seg: any) => {
-      let speaker = segmentSpeaker(seg, participants);
+  const metadata = buildSpeakerMetadata(data, rawInput, body);
 
-      // If speaker is generic ("Speaker" or "Unknown"), map alternating turns to known participants if available
-      if ((speaker === 'Speaker' || speaker === 'Unknown') && participants.length > 0) {
-        speaker = participants[turnIndex % participants.length];
-        turnIndex++;
+  let initialCount = rawUtterances.length;
+  let discardedCount = 0;
+  const mappedSegments: Array<{ speaker: string; start: number | null; end: number | null; text: string }> = [];
+
+  let lastSpeaker = metadata.humanParticipants[0] || '';
+
+  for (const seg of rawUtterances) {
+    const text = segmentText(seg);
+    if (!text) {
+      discardedCount++;
+      continue;
+    }
+
+    const speaker = resolveSpeaker(seg, metadata, diarizationTimeline, lastSpeaker);
+    lastSpeaker = speaker;
+
+    mappedSegments.push({
+      speaker,
+      start: segmentStart(seg),
+      end: segmentEnd(seg),
+      text,
+    });
+  }
+
+  // Sort segments chronologically by start timestamp
+  mappedSegments.sort((a, b) => {
+    if (a.start === null || b.start === null) return 0;
+    return a.start - b.start;
+  });
+
+  // Chronological Merging of Consecutive Segments from Same Speaker
+  const mergedSegments: Array<{ speaker: string; start: number | null; end: number | null; text: string }> = [];
+
+  for (const seg of mappedSegments) {
+    if (mergedSegments.length === 0) {
+      mergedSegments.push({ ...seg });
+    } else {
+      const prev = mergedSegments[mergedSegments.length - 1];
+      const timeGap = seg.start !== null && prev.end !== null ? seg.start - prev.end : 0;
+
+      if (prev.speaker === seg.speaker && timeGap < 4.0) {
+        const needsSpace = !/^[.,!?;:]/.test(seg.text) && !prev.text.endsWith('-');
+        prev.text = prev.text + (needsSpace ? ' ' : '') + seg.text;
+        if (seg.end !== null) {
+          prev.end = prev.end !== null ? Math.max(prev.end, seg.end) : seg.end;
+        }
+      } else {
+        mergedSegments.push({ ...seg });
       }
+    }
+  }
 
-      return {
-        speaker,
-        start: segmentStart(seg),
-        end: segmentEnd(seg),
-        text: segmentText(seg),
-      };
-    })
-    .filter((seg) => seg.text.length > 0);
+  const speakers = [...new Set(mergedSegments.map((s) => s.speaker))];
+  const text = mergedSegments.map((s) => `${s.speaker}: ${s.text}`).join('\n');
+  const ends = mergedSegments.map((s) => s.end).filter((v): v is number => typeof v === 'number');
+  const durationSecs = whisperResult?.audioDurationSecs ?? (ends.length ? Math.round(Math.max(...ends)) : null);
 
-  const speakers = [...new Set(segments.map((s) => s.speaker))];
-  const text = segments.map((s) => `${s.speaker}: ${s.text}`).join('\n');
-  const ends = segments.map((s) => s.end).filter((v): v is number => typeof v === 'number');
-  const durationSecs = ends.length ? Math.round(Math.max(...ends)) : null;
+  const speakerMapObj: Record<string, string> = {};
+  metadata.idToNameMap.forEach((v, k) => {
+    speakerMapObj[String(k)] = v;
+  });
 
-  return { segments, text, speakers, durationSecs, isEmpty: segments.length === 0 };
+  const metrics = {
+    audioDurationSecs: durationSecs,
+    numChunks: whisperResult?.numChunks ?? 1,
+    segmentsPerChunk: whisperResult?.segmentsPerChunk ?? [initialCount],
+    totalWhisperSegments: whisperResult?.totalSegments ?? initialCount,
+    speakerIdsDetected: metadata.rawSpeakerIdsDetected,
+    speakerMap: speakerMapObj,
+    finalLinesCount: mergedSegments.length,
+    segmentsDiscardedCount: discardedCount,
+  };
+
+  // Structured Log Output as Required
+  const sttSource = whisperResult ? 'whisper-large-v3 (fallback)' : 'meetingbaas built-in (gladia)';
+  console.log(`[Transcript Pipeline] STT source: ${sttSource}`);
+  console.log(`[Transcript Pipeline] audio duration: ${metrics.audioDurationSecs != null ? `${metrics.audioDurationSecs}s` : 'unknown'}`);
+  console.log(`[Transcript Pipeline] number of audio chunks: ${metrics.numChunks}`);
+  console.log(`[Transcript Pipeline] STT segments returned per chunk: ${JSON.stringify(metrics.segmentsPerChunk)}`);
+  console.log(`[Transcript Pipeline] total STT segments: ${metrics.totalWhisperSegments}`);
+  console.log(`[Transcript Pipeline] speaker IDs detected: ${JSON.stringify(metrics.speakerIdsDetected)}`);
+  console.log(`[Transcript Pipeline] speaker IDs mapped to participant names: ${JSON.stringify(metrics.speakerMap)}`);
+  console.log(`[Transcript Pipeline] number of final transcript lines (after merge): ${metrics.finalLinesCount}`);
+  console.log(`[Transcript Pipeline] segments discarded (empty/no text): ${metrics.segmentsDiscardedCount > 0 ? `${metrics.segmentsDiscardedCount}` : 'none'}`);
+
+  return {
+    segments: mergedSegments,
+    text,
+    speakers,
+    durationSecs,
+    isEmpty: mergedSegments.length === 0,
+    metrics,
+  };
 }
 
 // --------------------------------------------------------------------
 // Map a v2 bot.status_change code onto our meeting status vocabulary
-// ('pending' | 'recording' | 'failed'). Returns null for unknown codes
-// so the row is left unchanged. NEVER returns a completion status —
-// completion is driven exclusively by the bot.completed event, which is
-// the only payload that carries the transcript.
 // --------------------------------------------------------------------
 function mapStatusChangeToStatus(
   body: Record<string, any>
@@ -439,7 +692,6 @@ function mapStatusChangeToStatus(
   const errorMessage =
     body?.data?.error_message || body?.error_message || body?.data?.error || body?.error || null;
 
-  // Terminal join/record failures reported as a status code.
   const FAILED = [
     'waiting_room_timeout',
     'bot_rejected',
@@ -457,14 +709,10 @@ function mapStatusChangeToStatus(
     };
   }
 
-  // Actively in the call and capturing. Checked before any generic 'fail'
-  // so a transient 'recording_failed' (which contains 'recording') stays
-  // 'recording' — the real terminal failure arrives as its own bot.failed.
   if (code.includes('recording') || code === 'in_call' || code === 'transcribing' || code === 'in_call_recording') {
     return { status: 'recording' };
   }
 
-  // Still trying to get in.
   if (
     ['queued', 'joining_call', 'in_waiting_room', 'in_waiting_for_host', 'in_call_not_recording'].includes(code) ||
     code.includes('waiting') ||
@@ -473,13 +721,11 @@ function mapStatusChangeToStatus(
     return { status: 'pending' };
   }
 
-  return null; // unknown -> leave status unchanged
+  return null;
 }
 
 // --------------------------------------------------------------------
-// Gemini analysis over the REAL transcript. Returns the analysis, or
-// null if every candidate model failed (caller preserves the transcript
-// and marks the meeting completed-but-not-summarized). No fake fallback.
+// Gemini Analysis over the REAL Final Transcript
 // --------------------------------------------------------------------
 function cleanJsonResponse(rawText: string): any {
   let cleaned = rawText.trim();
@@ -491,9 +737,6 @@ function cleanJsonResponse(rawText: string): any {
   return JSON.parse(cleaned);
 }
 
-// action_items.due_date is a Postgres `date` column: a non-ISO value
-// ("next Friday") would fail the cast and drop the whole batch. Accept
-// only YYYY-MM-DD; anything else becomes null (task is still saved).
 function sanitizeDueDate(v: any): string | null {
   if (!v) return null;
   const s = String(v).trim();
@@ -503,26 +746,40 @@ function sanitizeDueDate(v: any): string | null {
 async function analyzeTranscript(
   transcriptText: string,
   participants: string[] = []
-): Promise<(AIAnalysis & { formatted_transcript?: string }) | null> {
+): Promise<AIAnalysis | null> {
   const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
   if (!GEMINI_API_KEY) {
     console.warn('[Webhook] GEMINI_API_KEY is not set — skipping AI summary.');
     return null;
   }
 
+  // Models this API key can actually reach were verified against Google's API:
+  // gemini-2.5-flash / gemini-2.0-flash / gemini-1.5-flash all return HTTP 404 for
+  // this key ("no longer available"), so they are intentionally excluded. A stale
+  // GEMINI_MODEL secret pointing at one of those dead models is dropped rather than
+  // wasting a round-trip and burying the working fallbacks.
+  const KNOWN_DEAD_MODELS = new Set([
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-pro',
+  ]);
+  const WORKING_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3-flash-preview'];
   const configured = Deno.env.get('GEMINI_MODEL')?.trim();
-  const geminiModels = [...new Set([configured, 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'].filter(
-    Boolean
-  ))] as string[];
+  const geminiModels = [
+    ...new Set(
+      [configured && !KNOWN_DEAD_MODELS.has(configured) ? configured : null, ...WORKING_MODELS].filter(Boolean)
+    ),
+  ] as string[];
 
   const participantInfo =
     participants.length > 0
-      ? `Known Meeting Participants who joined the call: ${participants.join(', ')}.`
+      ? `Meeting Participants: ${participants.join(', ')}.`
       : 'No explicit participant list provided.';
 
   const systemPrompt = `You are an expert executive assistant. Analyze this meeting transcript and output a strict JSON object with this structure:
 {
-  "formatted_transcript": "The complete line-by-line meeting transcript where any generic 'Unknown' or 'Speaker N' labels are replaced with the actual participant names (${participants.join(', ') || 'Actual names'}) based on conversational context, greetings, and speaker turns. Preserve all original spoken text.",
   "executive_summary": "A concise paragraph summarizing key meeting discussions",
   "key_decisions": ["Array of specific decisions made during the meeting"],
   "sentiment": "positive | neutral | negative | mixed",
@@ -538,55 +795,79 @@ async function analyzeTranscript(
 
 ${participantInfo}
 
-Original Meeting Transcript:
+Meeting Transcript:
 ${transcriptText}`;
 
   for (const model of geminiModels) {
-    try {
-      const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: systemPrompt }] }],
-            generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
-          }),
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const resp = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: systemPrompt }] }],
+              generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+            }),
+          }
+        );
+
+        if (!resp.ok) {
+          const transient = resp.status === 429 || resp.status === 500 || resp.status === 503;
+          let detail = '';
+          try {
+            detail = scrub((await resp.text()).slice(0, 200));
+          } catch (_) {
+            // response body unavailable; status alone is enough to decide
+          }
+          console.warn(
+            `[Webhook] Gemini model ${model} attempt ${attempt} -> HTTP ${resp.status}${detail ? ` (${detail})` : ''}`
+          );
+          if (transient && attempt < 2) {
+            await new Promise((r) => setTimeout(r, 900));
+            continue; // retry same model once for transient overload
+          }
+          break; // non-transient (e.g. 404 dead model) -> move on to the next model
         }
-      );
 
-      if (!resp.ok) {
-        console.warn(`[Webhook] Gemini returned status ${resp.status} for model ${model}`);
-        continue;
+        const data = await resp.json();
+        const textPart = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!textPart) {
+          const reason =
+            data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || 'no_text_returned';
+          console.warn(`[Webhook] Gemini model ${model} produced no text (${reason})`);
+          break;
+        }
+
+        const parsed = cleanJsonResponse(textPart);
+        console.log(`[Webhook] Summarized transcript with Gemini model ${model}`);
+        return {
+          executive_summary: String(parsed.executive_summary || '').trim() || 'No summary was produced.',
+          key_decisions: Array.isArray(parsed.key_decisions) ? parsed.key_decisions.map((d: any) => String(d)) : [],
+          sentiment: ['positive', 'neutral', 'negative', 'mixed'].includes(parsed.sentiment)
+            ? parsed.sentiment
+            : 'neutral',
+          action_items: Array.isArray(parsed.action_items)
+            ? parsed.action_items.map((item: any) => ({
+                task: String(item.task || 'Assigned task'),
+                assignee: item.assignee ? String(item.assignee) : null,
+                due_date: sanitizeDueDate(item.due_date),
+                status: 'pending',
+              }))
+            : [],
+        };
+      } catch (gErr) {
+        console.error(`[Webhook] Gemini API error (${model} attempt ${attempt}):`, scrub(gErr));
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 900));
+          continue;
+        }
       }
-
-      const data = await resp.json();
-      const textPart = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!textPart) continue;
-
-      const parsed = cleanJsonResponse(textPart);
-      console.log(`[Webhook] Summarized transcript with Gemini model ${model}`);
-      return {
-        formatted_transcript: typeof parsed.formatted_transcript === 'string' ? parsed.formatted_transcript.trim() : undefined,
-        executive_summary: String(parsed.executive_summary || '').trim() || 'No summary was produced.',
-        key_decisions: Array.isArray(parsed.key_decisions) ? parsed.key_decisions.map((d: any) => String(d)) : [],
-        sentiment: ['positive', 'neutral', 'negative', 'mixed'].includes(parsed.sentiment)
-          ? parsed.sentiment
-          : 'neutral',
-        action_items: Array.isArray(parsed.action_items)
-          ? parsed.action_items.map((item: any) => ({
-              task: String(item.task || 'Assigned task'),
-              assignee: item.assignee ? String(item.assignee) : null,
-              due_date: sanitizeDueDate(item.due_date),
-              status: 'pending',
-            }))
-          : [],
-      };
-    } catch (gErr) {
-      console.error(`[Webhook] Gemini API error (${model}):`, scrub(gErr));
     }
   }
 
+  console.error('[Webhook] All Gemini models failed — AI summary unavailable (transcript preserved).');
   return null;
 }
 
@@ -606,9 +887,6 @@ serve(async (req: Request): Promise<Response> => {
     return json({ error: 'Payload must be valid JSON' }, 400);
   }
 
-  // Optional shared-secret verification. When MEETINGBAAS_WEBHOOK_SECRET is
-  // set, the callback_config.secret is echoed back in x-mb-secret; require a
-  // match. When unset, the endpoint stays open (MeetingBaaS-only, public).
   const expectedSecret = (Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET') || '').trim();
   if (expectedSecret) {
     const provided =
@@ -641,26 +919,10 @@ serve(async (req: Request): Promise<Response> => {
     return json({ success: false, error: 'Server not configured' }, 200);
   }
 
-  // The anon fallback keeps the function alive, but it cannot do the job:
-  // - summaries / transcripts / action_items are service-role-only under RLS
-  //   (anon insert fails with 42501), so those tables stay empty; and
-  // - the meetings policy (auth.uid() = user_id or user_id is null) means a
-  //   meeting owned by a real user can never be updated, so it would sit at
-  //   'pending' forever with no transcript or summary.
-  // Log it loudly rather than failing silently. No key material is logged.
-  if (!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) {
-    console.warn(
-      '[Webhook] SUPABASE_SERVICE_ROLE_KEY secret is not set; running with the anon key. ' +
-        'Child-table writes will be RLS-blocked and user-owned meetings cannot be updated. Set the secret.'
-    );
-  }
-
   const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // Load the row deploy-bot created so we can key by it, stay idempotent,
-  // and never regress a terminal meeting.
   const { data: existing } = await supabaseAdmin
     .from('meetings')
     .select('id, status, summary, transcript')
@@ -673,7 +935,6 @@ serve(async (req: Request): Promise<Response> => {
     const isCompletion = eventType === 'bot.completed' || eventType === 'complete';
     const isFailure = eventType === 'bot.failed' || eventType === 'failed';
 
-    // ---- bot.completed -----------------------------------------------------
     if (isCompletion) {
       const alreadyHasContent =
         existing?.status === 'summarized' ||
@@ -684,7 +945,6 @@ serve(async (req: Request): Promise<Response> => {
       return await handleCompletion(supabaseAdmin, body, data, botId, existing?.id ?? null);
     }
 
-    // ---- bot.failed --------------------------------------------------------
     if (isFailure) {
       if (existing && existing.status === 'summarized') {
         return json({ success: true, event: eventType, bot_id: botId, duplicate: true }, 200);
@@ -701,7 +961,6 @@ serve(async (req: Request): Promise<Response> => {
       return json({ success: true, event: eventType, bot_id: botId, status: 'failed' }, 200);
     }
 
-    // ---- bot.status_change (and any other live event) ----------------------
     const mapped = mapStatusChangeToStatus(body);
     if (mapped && !isTerminal(existing?.status)) {
       await updateMeetingByBotId(supabaseAdmin, botId, { ...mapped, raw_payload: body });
@@ -714,11 +973,6 @@ serve(async (req: Request): Promise<Response> => {
   }
 });
 
-// --------------------------------------------------------------------
-// Update the meetings row by bot_id. deploy-bot created it, so an update
-// is expected; if somehow absent (webhook before insert), insert a row so
-// nothing is lost.
-// --------------------------------------------------------------------
 async function updateMeetingByBotId(
   supabaseAdmin: any,
   botId: string,
@@ -731,7 +985,6 @@ async function updateMeetingByBotId(
     .maybeSingle();
 
   if (existing) {
-    // Overwrite protection: Never replace a longer complete transcript with a shorter/empty one
     if (patch.transcript !== undefined && existing.transcript) {
       const existingText = String(existing.transcript).trim();
       const newText = String(patch.transcript || '').trim();
@@ -763,7 +1016,7 @@ async function updateMeetingByBotId(
 }
 
 // --------------------------------------------------------------------
-// Handle bot.completed: fetch the signed transcript, run Gemini, persist.
+// Handle bot.completed: fetch transcript, Whisper large-v3, merge & persist
 // --------------------------------------------------------------------
 async function handleCompletion(
   supabaseAdmin: any,
@@ -784,12 +1037,12 @@ async function handleCompletion(
     console.warn('[Pipeline Log 2] No media URL returned in completion payload.');
   }
 
-  let norm: NormalizedTranscript = { segments: [], text: '', speakers: [], durationSecs: null, isEmpty: true };
   let rawSource: any = null;
-
-  console.log('[Pipeline Log 3] Transcribing audio with Whisper large-v3 (openai/whisper-large-v3) engine...');
+  let whisperFetchResult: WhisperFetchResult | null = null;
 
   const transcriptionUrl = typeof data?.transcription === 'string' ? data.transcription : null;
+  const diarizationUrl = typeof data?.diarization === 'string' ? data.diarization : null;
+
   if (transcriptionUrl) {
     console.log('[Webhook] Fetching signed transcript document…');
     rawSource = await fetchSignedJson(transcriptionUrl);
@@ -797,10 +1050,10 @@ async function handleCompletion(
 
   // If signed transcript is absent or empty, invoke OpenAI Whisper large-v3 on recording URL
   if (recordingUrl && (!rawSource || extractUtterancesFromDoc(rawSource).length === 0)) {
-    console.log('[Webhook] Invoking OpenAI Whisper large-v3 model on recorded audio URL...');
-    const whisperResult = await transcribeWithWhisperLargeV3(recordingUrl);
-    if (whisperResult) {
-      rawSource = whisperResult;
+    console.log('[Pipeline Log 3] Transcribing audio with OpenAI Whisper large-v3 (openai/whisper-large-v3) engine...');
+    whisperFetchResult = await transcribeWithWhisperLargeV3(recordingUrl);
+    if (whisperFetchResult) {
+      rawSource = whisperFetchResult.rawSegments;
     }
   }
 
@@ -815,22 +1068,9 @@ async function handleCompletion(
       null;
   }
 
-  const participants = extractParticipants(data, rawSource, body);
-  if (participants.length > 0) {
-    console.log(`[Webhook] Identified meeting participants: ${participants.join(', ')}`);
-  }
+  const diarizationTimeline = await fetchDiarizationTimeline(diarizationUrl);
+  const norm = normalizeTranscript(rawSource, data, body, diarizationTimeline, whisperFetchResult);
 
-  if (rawSource) {
-    norm = normalizeTranscript(rawSource, participants);
-    console.log(
-      `[Pipeline Log 4] Chunks processed: ${norm.segments.length} dialogue turns, ${norm.text.length} total characters.`
-    );
-  } else {
-    console.warn('[Webhook] bot.completed carried no transcription URL or inline transcript.');
-  }
-
-  // Fall back to the real duration derived from the last utterance's end
-  // time when MeetingBaaS didn't report one. Still real data, not invented.
   if (durationSecs === null && norm.durationSecs !== null) {
     durationSecs = norm.durationSecs;
   }
@@ -855,11 +1095,10 @@ async function handleCompletion(
   console.log('[Pipeline Log 5] Saving complete transcript to Supabase (meetings & transcripts tables)...');
   console.log('[Pipeline Log 6] Sending complete transcript to Gemini AI for executive summary & action items...');
 
+  const participants = norm.speakers;
   const analysis = await analyzeTranscript(norm.text, participants);
-  const finalTranscriptText = analysis?.formatted_transcript?.trim() || norm.text;
+  const finalTranscriptText = norm.text;
 
-  // Transcript exists but Gemini failed on every model: preserve the
-  // transcript, complete (not summarized), record a retryable note. No fake.
   if (!analysis) {
     console.warn('[Pipeline Warning] AI summarization failed, but complete transcript remains fully saved and visible.');
     const meeting = await updateMeetingByBotId(supabaseAdmin, botId, {
@@ -930,6 +1169,7 @@ async function handleCompletion(
       meeting_id: meetingId,
       summary: analysis.executive_summary,
       action_items: analysis.action_items,
+      metrics: norm.metrics,
     },
     200
   );
@@ -942,5 +1182,10 @@ async function insertTranscriptRows(supabaseAdmin: any, meetingId: string | null
     speaker: s.speaker,
     text: s.text,
   }));
-  await supabaseAdmin.from('transcripts').insert(rows);
+  const { error } = await supabaseAdmin.from('transcripts').insert(rows);
+  if (error) {
+    console.error(`[Webhook] transcripts insert failed (${error.code}): ${error.message}`);
+  } else {
+    console.log(`[Transcript Pipeline] persisted ${rows.length} transcript row(s) to Supabase.`);
+  }
 }

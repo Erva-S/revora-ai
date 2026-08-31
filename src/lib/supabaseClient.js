@@ -1,8 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl =
+const rawSupabaseUrl =
   import.meta.env.VITE_SUPABASE_URL ||
   'https://zddythsszyznsguiuiss.supabase.co';
+
+const supabaseUrl = rawSupabaseUrl
+  ? rawSupabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '')
+  : '';
 
 const supabaseKey =
   import.meta.env.VITE_SUPABASE_ANON_KEY ||

@@ -59,13 +59,40 @@ export function AuthProvider({ children }) {
             const userProfile = await fetchUserProfile(initialSession.user);
             setUser(userProfile);
           } else {
-            setUser(null);
+            // Restore demo session if saved in localStorage
+            try {
+              const savedDemo = localStorage.getItem('revora_demo_user');
+              if (savedDemo) {
+                const parsed = JSON.parse(savedDemo);
+                if (parsed && parsed.email) {
+                  setUser(parsed);
+                } else {
+                  setUser(null);
+                }
+              } else {
+                setUser(null);
+              }
+            } catch (_) {
+              setUser(null);
+            }
           }
           setLoading(false);
         }
       } catch (err) {
         console.error('Error initializing Supabase session:', err);
-        if (mounted) setLoading(false);
+        if (mounted) {
+          try {
+            const savedDemo = localStorage.getItem('revora_demo_user');
+            if (savedDemo) {
+              setUser(JSON.parse(savedDemo));
+            } else {
+              setUser(null);
+            }
+          } catch (_) {
+            setUser(null);
+          }
+          setLoading(false);
+        }
       }
     }
 
@@ -75,10 +102,14 @@ export function AuthProvider({ children }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
       setSession(currentSession);
       if (currentSession?.user) {
+        try { localStorage.removeItem('revora_demo_user'); } catch (_) {}
         const userProfile = await fetchUserProfile(currentSession.user);
         setUser(userProfile);
       } else {
-        setUser(null);
+        if (event === 'SIGNED_OUT') {
+          try { localStorage.removeItem('revora_demo_user'); } catch (_) {}
+          setUser(null);
+        }
       }
       setLoading(false);
     });
@@ -211,6 +242,9 @@ export function AuthProvider({ children }) {
       role: 'admin',
       createdAt: new Date().toISOString(),
     };
+    try {
+      localStorage.setItem('revora_demo_user', JSON.stringify(demoAdminObj));
+    } catch (_) {}
     setUser(demoAdminObj);
     return { success: true, user: demoAdminObj };
   };
@@ -226,6 +260,9 @@ export function AuthProvider({ children }) {
       role: 'user',
       createdAt: new Date().toISOString(),
     };
+    try {
+      localStorage.setItem('revora_demo_user', JSON.stringify(demoUserObj));
+    } catch (_) {}
     setUser(demoUserObj);
     return { success: true, user: demoUserObj };
   };
@@ -233,6 +270,7 @@ export function AuthProvider({ children }) {
   // Sign Out
   const logout = async () => {
     try {
+      try { localStorage.removeItem('revora_demo_user'); } catch (_) {}
       await supabase.auth.signOut();
     } catch (err) {
       console.warn('Sign out error:', err);

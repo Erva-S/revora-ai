@@ -1,12 +1,30 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Bot, ArrowRight, Menu, X, Sparkles, User, ShieldCheck, LogIn } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 
 export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCompanyModal, onOpenLoginModal, onNavigateDashboard }) {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+
+  const handleDashboardClick = () => {
+    if (onNavigateDashboard) {
+      onNavigateDashboard();
+    } else {
+      navigate(user?.role === 'admin' ? '/admin-dashboard' : '/dashboard');
+    }
+  };
+
+  const handleSignInClick = () => {
+    if (onOpenLoginModal) {
+      onOpenLoginModal();
+    } else {
+      navigate('/login');
+    }
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -79,7 +97,7 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
             <div className="flex items-center gap-3">
               {user ? (
                 <button
-                  onClick={onNavigateDashboard}
+                  onClick={handleDashboardClick}
                   className={`group h-9 px-4 rounded-[12px] text-[13px] font-bold flex items-center gap-2 border shadow-xs transition-all cursor-pointer ${
                     user.role === 'admin'
                       ? 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-800'
@@ -104,7 +122,7 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
                 </button>
               ) : (
                 <button
-                  onClick={onOpenLoginModal}
+                  onClick={handleSignInClick}
                   className="h-9 px-3.5 rounded-[12px] bg-black/5 hover:bg-black/10 border border-black/10 text-[13px] font-semibold flex items-center gap-1.5 text-black transition-all cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5 text-[#0084FF]" />
@@ -185,16 +203,16 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
               <div className="pt-6 border-t border-black/10 flex flex-col gap-3">
                 {user ? (
                   <button
-                    onClick={() => { setMobileMenuOpen(false); onNavigateDashboard(); }}
-                    className="w-full h-11 rounded-[14px] bg-[#0084FF] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md"
+                    onClick={() => { setMobileMenuOpen(false); handleDashboardClick(); }}
+                    className="w-full h-11 rounded-[14px] bg-[#0084FF] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer"
                   >
                     <User className="w-4 h-4" />
                     <span>{user.name || user.email || 'Open Dashboard'}</span>
                   </button>
                 ) : (
                   <button
-                    onClick={() => { setMobileMenuOpen(false); onOpenLoginModal(); }}
-                    className="w-full h-11 rounded-[14px] bg-black/5 hover:bg-black/10 text-black font-bold text-sm flex items-center justify-center gap-2"
+                    onClick={() => { setMobileMenuOpen(false); handleSignInClick(); }}
+                    className="w-full h-11 rounded-[14px] bg-black/5 hover:bg-black/10 text-black font-bold text-sm flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <LogIn className="w-4 h-4 text-[#0084FF]" />
                     <span>Sign In / Passport Auth</span>

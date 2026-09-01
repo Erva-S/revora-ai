@@ -198,8 +198,8 @@ export default function App() {
           }
         />
 
-        {/* Fallback Catch-all -> Redirect to /dashboard */}
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        {/* Fallback Catch-all -> Redirect to / */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AuthProvider>
   );

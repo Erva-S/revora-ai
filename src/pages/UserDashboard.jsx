@@ -97,7 +97,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
   const handleSignOut = async () => {
     await logout();
-    navigate('/dashboard', { replace: true });
+    navigate('/', { replace: true });
   };
 
   const handleBackHome = () => {
@@ -153,30 +153,30 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           </div>
         </div>
 
-        {/* Logged in User Badge & Logout */}
+        {/* Logged in User Badge (Navigates to Profile) */}
         <div className="flex items-center gap-4">
           {user ? (
-            <>
-              <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-neutral-100 border border-black/5">
+            <button
+              onClick={() => navigate('/profile')}
+              className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-neutral-100 hover:bg-neutral-200/80 border border-black/5 transition-colors cursor-pointer text-left"
+              title="View Profile"
+            >
+              {user?.avatar ? (
                 <img
-                  src={user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face'}
+                  src={user.avatar}
                   alt="User Avatar"
                   className="w-7 h-7 rounded-full object-cover border border-white"
                 />
-                <div className="hidden sm:flex flex-col text-left leading-tight">
-                  <span className="font-bold text-xs text-black">{user?.name || 'Standard User'}</span>
-                  <span className="text-[10px] text-black/50">{user?.email}</span>
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-[#0084FF] text-white flex items-center justify-center text-xs font-bold uppercase shadow-2xs shrink-0">
+                  {(user?.name || user?.email || 'U').charAt(0).toUpperCase()}
                 </div>
+              )}
+              <div className="hidden sm:flex flex-col text-left leading-tight">
+                <span className="font-bold text-xs text-black">{user?.name || 'Standard User'}</span>
+                <span className="text-[10px] text-black/50">{user?.email}</span>
               </div>
-
-              <button
-                onClick={handleSignOut}
-                className="px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Sign Out</span>
-              </button>
-            </>
+            </button>
           ) : (
             <button
               onClick={() => navigate('/login')}
@@ -494,26 +494,54 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
         {activeTab === 'profile' && (
           <div className="space-y-6">
             <div className="p-8 rounded-[28px] bg-white border border-black/10 shadow-xs space-y-6 max-w-[800px]">
-              <div className="flex items-center gap-5 border-b border-black/5 pb-6">
-                <img
-                  src={user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=120&h=120&fit=crop&crop=face'}
-                  alt="Profile Avatar"
-                  className="w-20 h-20 rounded-2xl object-cover border-2 border-[#0084FF]/20 shadow-md"
-                />
-                <div className="space-y-1">
-                  <h3 className="font-outfit font-black text-2xl text-black">{user?.name || 'Standard User'}</h3>
-                  <p className="text-xs text-black/50 font-mono">{user?.email || 'guest@revora.ai'}</p>
-                  <div className="flex items-center gap-2 pt-1">
-                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono ${
-                      user?.role === 'admin' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-[#0084FF]'
-                    }`}>
-                      Role: {user?.role || 'user'}
-                    </span>
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700 font-mono">
-                      Status: Active
-                    </span>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 border-b border-black/5 pb-6">
+                <div className="flex items-center gap-5">
+                  {user?.avatar ? (
+                    <img
+                      src={user.avatar}
+                      alt="Profile Avatar"
+                      className="w-20 h-20 rounded-2xl object-cover border-2 border-[#0084FF]/20 shadow-md"
+                    />
+                  ) : (
+                    <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#0084FF] to-[#0066CC] text-white flex items-center justify-center text-3xl font-black shadow-md">
+                      {(user?.name || user?.email || 'U').charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="space-y-1">
+                    <h3 className="font-outfit font-black text-2xl text-black">{user?.name || 'Standard User'}</h3>
+                    <p className="text-xs text-black/50 font-mono">{user?.email || 'guest@revora.ai'}</p>
+                    <div className="flex items-center gap-2 pt-1">
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono ${
+                        user?.role === 'admin' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-[#0084FF]'
+                      }`}>
+                        Role: {user?.role || 'user'}
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700 font-mono">
+                        Status: Active
+                      </span>
+                    </div>
                   </div>
                 </div>
+
+                {/* Log Out button in Profile */}
+                {user ? (
+                  <button
+                    onClick={handleSignOut}
+                    className="px-4 py-2.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 border border-red-200/60 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs hover:shadow-xs self-start sm:self-center shrink-0"
+                    title="Log out and return to main dashboard"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Log Out Account</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => navigate('/login')}
+                    className="px-4 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0074E0] text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs self-start sm:self-center shrink-0"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    <span>Sign In</span>
+                  </button>
+                )}
               </div>
 
               <div className="space-y-4 text-xs">

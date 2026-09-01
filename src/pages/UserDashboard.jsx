@@ -3,6 +3,8 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
+import ActionItemCard, { readActionItem } from '../components/ActionItemCard';
+import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, RefreshCw, CheckCircle2, Clock, AlertCircle, Video, ExternalLink } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -255,14 +257,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
                         <h4 className="font-bold text-sm text-black">
                           {m.title || 'Live Video Meeting'}
                         </h4>
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono border ${
-                          m.status === 'summarized' || m.status === 'completed'
-                            ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
-                            : m.status === 'recording' || m.status === 'pending'
-                            ? 'bg-sky-100 text-[#0084FF] border-sky-300 animate-pulse'
-                            : 'bg-red-100 text-red-700 border-red-300'
-                        }`}>
-                          {m.status}
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono border ${meetingStageClasses(m)}`}>
+                          {meetingStageLabel(m)}
                         </span>
                       </div>
                       <p className="text-xs text-black/50 font-mono">
@@ -292,15 +288,23 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
 
                   {Array.isArray(m.action_items) && m.action_items.length > 0 && (
                     <div className="flex flex-wrap gap-2 pt-1">
-                      {m.action_items.map((item, idx) => (
-                        <span
-                          key={idx}
-                          className="px-3 py-1 rounded-lg bg-purple-50 text-purple-700 border border-purple-100 text-[11px] font-semibold flex items-center gap-1.5"
-                        >
-                          <CheckSquare className="w-3 h-3 text-purple-500" />
-                          <span>{typeof item === 'string' ? item : item.task || JSON.stringify(item)}</span>
-                        </span>
-                      ))}
+                      {m.action_items.map((item, idx) => {
+                        const parsed = readActionItem(item);
+                        if (!parsed) return null;
+                        return (
+                          <span
+                            key={idx}
+                            className="px-3 py-1 rounded-lg bg-purple-50 text-purple-700 border border-purple-100 text-[11px] font-semibold flex items-center gap-1.5"
+                          >
+                            <CheckSquare className="w-3 h-3 text-purple-500" />
+                            <span>{parsed.task}</span>
+                            {parsed.assignee && (
+                              <span className="text-purple-500 font-medium">· {parsed.assignee}</span>
+                            )}
+                            {parsed.due && <span className="text-purple-500 font-medium">· {parsed.due}</span>}
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -382,14 +386,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
                   <h4 className="text-xs font-bold text-black uppercase tracking-wider">Assigned Action Items</h4>
                   <div className="space-y-2">
                     {selectedMeeting.action_items.map((item, idx) => (
-                      <div key={idx} className="p-3 rounded-xl bg-purple-50 border border-purple-100 text-xs text-purple-900 font-medium flex items-center justify-between">
-                        <span>{typeof item === 'string' ? item : item.task || JSON.stringify(item)}</span>
-                        {item.assignee && (
-                          <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-700 font-bold text-[10px]">
-                            {item.assignee}
-                          </span>
-                        )}
-                      </div>
+                      <ActionItemCard key={idx} item={item} />
                     ))}
                   </div>
                 </div>

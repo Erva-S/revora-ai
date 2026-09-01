@@ -13,7 +13,7 @@ export default function AdminDashboard({ onNavigateHome }) {
 
   const handleSignOut = async () => {
     await logout();
-    navigate('/dashboard', { replace: true });
+    navigate('/', { replace: true });
   };
 
   const handleHomeClick = () => {

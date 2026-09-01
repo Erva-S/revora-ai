@@ -22,14 +22,14 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
     );
   }
 
-  // If user is not authenticated, redirect to /dashboard preserving origin
+  // If user is not authenticated, redirect to landing page (/) preserving origin
   if (!user) {
-    return <Navigate to="/dashboard" state={{ from: location }} replace />;
+    return <Navigate to="/" state={{ from: location }} replace />;
   }
 
   // If route is restricted to admins and current user is not admin
   if (adminOnly && user.role !== 'admin') {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/" replace />;
   }
 
   return children;

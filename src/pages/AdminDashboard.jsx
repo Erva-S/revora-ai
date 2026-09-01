@@ -1,13 +1,25 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
-import { ShieldCheck, LogOut, Users, UserCheck, ShieldAlert, ArrowLeft, Trash2, Edit3, Database, RefreshCw, Key, Lock, Check, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, LogOut, Users, ShieldAlert, ArrowLeft, Trash2, Database, RefreshCw, Key, Lock, Check } from 'lucide-react';
 
 export default function AdminDashboard({ onNavigateHome }) {
-  const { user, logout } = useAuth();
+  const { user, logout, loading } = useAuth();
+  const navigate = useNavigate();
   const [usersList, setUsersList] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
+
+  const handleSignOut = async () => {
+    await logout();
+    navigate('/dashboard', { replace: true });
+  };
+
+  const handleHomeClick = () => {
+    if (onNavigateHome) onNavigateHome();
+    navigate('/');
+  };
 
   // Fetch users list directly from Supabase profiles table
   const fetchUsers = async () => {
@@ -86,6 +98,21 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
+  // While auth status is loading, wait before rendering access denied
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-neutral-900 text-white flex flex-col items-center justify-center gap-4 font-sans">
+        <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center animate-pulse">
+          <ShieldCheck className="w-6 h-6" />
+        </div>
+        <div className="flex items-center gap-2 text-xs font-mono text-neutral-400">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+          <span>Verifying Admin credentials...</span>
+        </div>
+      </div>
+    );
+  }
+
   // Guard Access: Check if authenticated user is Admin
   if (!user || user.role !== 'admin') {
     return (
@@ -100,16 +127,16 @@ export default function AdminDashboard({ onNavigateHome }) {
           </p>
           <div className="pt-2 flex gap-3">
             <button
-              onClick={onNavigateHome}
+              onClick={handleHomeClick}
               className="flex-1 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs cursor-pointer transition-colors"
             >
               Return Home
             </button>
             <button
-              onClick={logout}
+              onClick={handleSignOut}
               className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs cursor-pointer transition-colors"
             >
-              Sign Out & Switch Account
+              Sign Out
             </button>
           </div>
         </div>
@@ -126,7 +153,7 @@ export default function AdminDashboard({ onNavigateHome }) {
       <header className="sticky top-0 z-40 bg-neutral-900/90 backdrop-blur-md border-b border-neutral-800 px-6 py-4 flex items-center justify-between shadow-md">
         <div className="flex items-center gap-4">
           <button
-            onClick={onNavigateHome}
+            onClick={handleHomeClick}
             className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors cursor-pointer"
             title="Return to Main Page"
           >
@@ -163,7 +190,7 @@ export default function AdminDashboard({ onNavigateHome }) {
           </div>
 
           <button
-            onClick={logout}
+            onClick={handleSignOut}
             className="px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />

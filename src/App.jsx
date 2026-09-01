@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import ProtectedRoute from './components/ProtectedRoute';
 import Navbar from './components/Navbar';
 import HeroSection from './components/HeroSection';
 import FeaturesSection from './components/FeaturesSection';
@@ -15,17 +17,39 @@ import LoginModal from './components/LoginModal';
 import UserDashboard from './pages/UserDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 
-function MainApp() {
-  const { user } = useAuth();
-  const [currentView, setCurrentView] = useState('home'); // 'home' | 'dashboard' | 'admin-dashboard'
+function LandingPage({ isLoginRoute = false }) {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [isTryModalOpen, setIsTryModalOpen] = useState(false);
   const [isFeatureModalOpen, setIsFeatureModalOpen] = useState(false);
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
   const [isGetStartedModalOpen, setIsGetStartedModalOpen] = useState(false);
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(isLoginRoute);
   const [activeFeatureId, setActiveFeatureId] = useState('transcription');
   const [initialPrompt, setInitialPrompt] = useState('');
+
+  // Handle URL query parameters (e.g. ?try=true)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('try') === 'true') {
+      setIsTryModalOpen(true);
+    }
+  }, [location.search]);
+
+  // Keep login modal open if on /login route and unauthenticated
+  useEffect(() => {
+    if (isLoginRoute && !user && !loading) {
+      setIsLoginModalOpen(true);
+    }
+  }, [isLoginRoute, user, loading]);
+
+  // If authenticated user visits /login, redirect to /dashboard
+  if (isLoginRoute && user && !loading) {
+    return <Navigate to={user.role === 'admin' ? '/admin-dashboard' : '/dashboard'} replace />;
+  }
 
   const handleOpenTryModal = (prompt = '') => {
     setInitialPrompt(prompt);
@@ -37,50 +61,22 @@ function MainApp() {
     setIsFeatureModalOpen(true);
   };
 
-  const handleNavigateDashboard = async () => {
-    if (!user) {
-      const res = await loginDemoUser();
-      if (res?.user?.role === 'admin') {
-        setCurrentView('admin-dashboard');
-      } else {
-        setCurrentView('dashboard');
-      }
-      return;
-    }
-    if (user.role === 'admin') {
-      setCurrentView('admin-dashboard');
-    } else {
-      setCurrentView('dashboard');
-    }
-  };
-
   const handleLoginSuccess = (authenticatedUser) => {
+    setIsLoginModalOpen(false);
     if (authenticatedUser?.role === 'admin') {
-      setCurrentView('admin-dashboard');
+      navigate('/admin-dashboard');
     } else {
-      setCurrentView('dashboard');
+      navigate('/dashboard');
     }
   };
 
-  // Render Protected Dashboards when view state changes
-  if (currentView === 'dashboard') {
-    return (
-      <UserDashboard
-        onNavigateHome={() => setCurrentView('home')}
-        onOpenTryModal={() => handleOpenTryModal('')}
-      />
-    );
-  }
+  const handleCloseLoginModal = () => {
+    setIsLoginModalOpen(false);
+    if (isLoginRoute) {
+      navigate('/');
+    }
+  };
 
-  if (currentView === 'admin-dashboard') {
-    return (
-      <AdminDashboard
-        onNavigateHome={() => setCurrentView('home')}
-      />
-    );
-  }
-
-  // Render Main Landing Page
   return (
     <div className="min-h-screen bg-white text-[#171717] font-sans antialiased selection:bg-[#0084FF]/20 selection:text-[#0084FF] relative overflow-x-hidden">
       {/* Floating Liquid-Glass Navigation Bar */}
@@ -89,11 +85,10 @@ function MainApp() {
         onOpenGetStartedModal={() => setIsGetStartedModalOpen(true)}
         onOpenCompanyModal={() => setIsCompanyModalOpen(true)}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
-        onNavigateDashboard={handleNavigateDashboard}
       />
 
       {/* Main Content */}
-      <main>
+      <main id="home">
         {/* Section 1: Hero Landing Page */}
         <HeroSection
           onOpenTryModal={() => handleOpenTryModal('')}
@@ -153,10 +148,10 @@ function MainApp() {
         onClose={() => setIsDemoModalOpen(false)}
       />
 
-      {/* MODAL 6: Unified Passport.js Login Modal (Google OAuth + Admin Local Strategy) */}
+      {/* MODAL 6: Authentication Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}
-        onClose={() => setIsLoginModalOpen(false)}
+        onClose={handleCloseLoginModal}
         onSuccessRedirect={handleLoginSuccess}
       />
     </div>
@@ -166,7 +161,46 @@ function MainApp() {
 export default function App() {
   return (
     <AuthProvider>
-      <MainApp />
+      <Routes>
+        {/* Public Landing Page */}
+        <Route path="/" element={<LandingPage />} />
+
+        {/* Dedicated /login route -> opens authentication or redirects to dashboard */}
+        <Route path="/login" element={<LandingPage isLoginRoute={true} />} />
+
+        {/* User Dashboard Overview */}
+        <Route path="/dashboard" element={<UserDashboard />} />
+
+        {/* Meetings Feed & Direct Meeting URL (/meetings/:id or /meeting/:id) */}
+        <Route path="/meetings" element={<UserDashboard defaultTab="meetings" />} />
+        <Route path="/meetings/:id" element={<UserDashboard defaultTab="meetings" />} />
+        <Route path="/meeting/:id" element={<UserDashboard defaultTab="meetings" />} />
+
+        {/* Settings & Profile Pages */}
+        <Route path="/settings" element={<UserDashboard defaultTab="settings" />} />
+        <Route path="/profile" element={<UserDashboard defaultTab="profile" />} />
+
+        {/* Protected Admin Control Center */}
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin-dashboard"
+          element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Fallback Catch-all -> Redirect to /dashboard */}
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
     </AuthProvider>
   );
 }

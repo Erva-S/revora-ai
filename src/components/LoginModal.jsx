@@ -4,7 +4,7 @@ import { X, ShieldCheck, Mail, Lock, LogIn, ArrowRight, UserCheck, Key, RefreshC
 import { useAuth } from '../context/AuthContext';
 
 export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
-  const { loginAdmin, loginGoogle, loginDemoUser, error, setError } = useAuth();
+  const { loginAdmin, loginDemoAdmin, loginGoogle, loginDemoUser, error, setError } = useAuth();
   const [activeTab, setActiveTab] = useState('user'); // 'user' | 'admin'
   const [adminEmail, setAdminEmail] = useState('admin@revora.ai');
   const [adminPassword, setAdminPassword] = useState('Admin@123');
@@ -21,6 +21,16 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
     setSubmitting(false);
 
     if (result.success) {
+      onClose();
+      if (onSuccessRedirect) onSuccessRedirect(result.user);
+    }
+  };
+
+  const handleDemoAdminClick = async () => {
+    setSubmitting(true);
+    const result = await loginDemoAdmin();
+    setSubmitting(false);
+    if (result?.success) {
       onClose();
       if (onSuccessRedirect) onSuccessRedirect(result.user);
     }
@@ -207,6 +217,20 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
                     </>
                   )}
                 </button>
+
+                {/* Instant Local Demo Admin shortcut */}
+                <div className="pt-2 text-center">
+                  <span className="text-[11px] text-black/40 font-mono block mb-2">— OR FOR QUICK LOCAL TESTING —</span>
+                  <button
+                    type="button"
+                    onClick={handleDemoAdminClick}
+                    disabled={submitting}
+                    className="w-full py-2.5 px-4 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Instant Admin Demo Login (admin@revora.ai)</span>
+                  </button>
+                </div>
               </form>
             )}
 

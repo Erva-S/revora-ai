@@ -169,16 +169,58 @@ export default function App() {
         <Route path="/login" element={<LandingPage isLoginRoute={true} />} />
 
         {/* User Dashboard Overview */}
-        <Route path="/dashboard" element={<UserDashboard />} />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <UserDashboard />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Meetings Feed & Direct Meeting URL (/meetings/:id or /meeting/:id) */}
-        <Route path="/meetings" element={<UserDashboard defaultTab="meetings" />} />
-        <Route path="/meetings/:id" element={<UserDashboard defaultTab="meetings" />} />
-        <Route path="/meeting/:id" element={<UserDashboard defaultTab="meetings" />} />
+        <Route
+          path="/meetings"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="meetings" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/meetings/:id"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="meetings" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/meeting/:id"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="meetings" />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Settings & Profile Pages */}
-        <Route path="/settings" element={<UserDashboard defaultTab="settings" />} />
-        <Route path="/profile" element={<UserDashboard defaultTab="profile" />} />
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="settings" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="profile" />
+            </ProtectedRoute>
+          }
+        />
 
         {/* Protected Admin Control Center */}
         <Route
@@ -191,6 +233,15 @@ export default function App() {
         />
         <Route
           path="/admin-dashboard"
+          element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+        {/* Admin meeting management lives on the same control center screen */}
+        <Route
+          path="/admin/meetings"
           element={
             <ProtectedRoute adminOnly={true}>
               <AdminDashboard />

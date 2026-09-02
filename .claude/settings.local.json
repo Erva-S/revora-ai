@@ -21,7 +21,12 @@
       "Bash(node -e ' *)",
       "Bash(timeout 400 npm run build)",
       "Bash(sed 's#globalThis.Deno = { env: { get: \\(k\\) => env\\\\[k\\\\] } };#globalThis.Deno = { env: { get: \\(k\\) => \\(k === \"GEMINI_API_KEY\" ? undefined : env[k]\\) } };#' run2.mjs)",
-      "Bash(timeout 300 node run3.mjs)"
+      "Bash(timeout 300 node run3.mjs)",
+      "Bash(npm run *)",
+      "Bash(npx --yes esbuild@0.21.5 .verify-deploy-bot/index.ts --loader=ts --format=esm --target=es2022 --outfile=.verify-deploy-bot/index.mjs)",
+      "Bash(npx --yes esbuild@0.21.5 .verify-deploy-bot/index.ts --format=esm --target=es2022 --outfile=.verify-deploy-bot/index.mjs)",
+      "Bash(node .verify-deploy-bot/run.mjs)",
+      "Bash(supabase --version)"
     ]
   }
 }

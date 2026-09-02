@@ -22,14 +22,17 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
     );
   }
 
-  // If user is not authenticated, redirect to landing page (/) preserving origin
+  // Not signed in: send them to the existing login route, remembering where they
+  // were headed so the app can return them there after authentication.
   if (!user) {
-    return <Navigate to="/" state={{ from: location }} replace />;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // If route is restricted to admins and current user is not admin
+  // Signed in but not an admin: keep them inside the user portal rather than
+  // bouncing them out of the application. This is only a navigation guard —
+  // the deploy-bot Edge Function and RLS enforce the real authorization.
   if (adminOnly && user.role !== 'admin') {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
 
   return children;

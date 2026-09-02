@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ShieldCheck, Mail, Lock, LogIn, ArrowRight, UserCheck, Key, RefreshCw, Sparkles } from 'lucide-react';
+import { X, ShieldCheck, Mail, Lock, LogIn, ArrowRight, UserCheck, RefreshCw, Sparkles } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
@@ -20,7 +20,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
     const result = await loginAdmin(adminEmail, adminPassword);
     setSubmitting(false);
 
-    if (result.success) {
+    if (result?.success) {
       onClose();
       if (onSuccessRedirect) onSuccessRedirect(result.user);
     }
@@ -28,6 +28,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
 
   const handleDemoAdminClick = async () => {
     setSubmitting(true);
+    setError(null);
     const result = await loginDemoAdmin();
     setSubmitting(false);
     if (result?.success) {
@@ -38,6 +39,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
 
   const handleDemoUserClick = async () => {
     setSubmitting(true);
+    setError(null);
     const result = await loginDemoUser();
     setSubmitting(false);
     if (result?.success) {
@@ -152,6 +154,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
                 <div className="pt-2 text-center">
                   <span className="text-[11px] text-black/40 font-mono block mb-2">— OR FOR QUICK LOCAL TESTING —</span>
                   <button
+                    type="button"
                     onClick={handleDemoUserClick}
                     disabled={submitting}
                     className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 text-[#0084FF] border border-sky-100 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
@@ -167,7 +170,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
             {activeTab === 'admin' && (
               <form onSubmit={handleAdminSubmit} className="space-y-4">
                 <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-800 font-medium">
-                  <strong>Admin Credentials:</strong> Requires `role === 'admin'` database check.
+                  <strong>Admin sign-in:</strong> the account must carry `role = 'admin'` in the profiles table. Meeting scheduling and AI bot deployment are admin-only.
                 </div>
 
                 <div>

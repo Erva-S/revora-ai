@@ -1,11 +1,16 @@
 // ====================================================================
 // REVORA — Edge Function: deploy-bot
 //
-// 1. Authenticates request JWT token (extracts user_id from the JWT).
+// 1. AUTHORIZATION (fail-closed): the caller must present a real user JWT and
+//    must have profiles.role = 'admin'. Bot deployment is an admin-only
+//    operation, so a normal signed-in user calling this endpoint directly gets
+//    403 — hiding the button in the UI is not what protects it. Applies to
+//    POST (deploy) and DELETE (force the bot to leave) alike.
 // 2. Dispatches a bot via the MeetingBaaS v2 API (POST https://api.meetingbaas.com/v2/bots)
 //    with recording + transcription + callback + silence-based leave enabled.
 // 3. Surfaces MeetingBaaS API failures directly so the caller can see the real dispatch error.
-// 4. Persists the meeting row only after a bot is successfully created.
+// 4. Persists the meeting row only after a bot is successfully created, owned by
+//    the user the admin assigned it to (defaults to the admin themselves).
 //
 // NOTE: the v1 create-bot fields (webhook_url / automatic_leave / speech_to_text)
 // are IGNORED by v2 — that is why a v1-style bot joined but never recorded,
@@ -87,6 +92,154 @@ function readResponseError(status: number, rawText: string): string {
   return `MeetingBaaS request failed with HTTP ${status}: ${rawText}`;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type AdminCaller =
+  | { ok: true; userId: string }
+  | { ok: false; response: Response };
+
+// Bot deployment is admin-only. The caller's role is read from public.profiles
+// with the service role (the single trusted source) — never from the request
+// body, user_metadata, or anything else the client can set. Anything we cannot
+// positively verify is rejected, so a misconfigured deployment fails closed
+// instead of silently deploying bots for anonymous callers.
+async function requireAdminCaller(
+  req: Request,
+  supabaseUrl: string,
+  serviceRoleKey: string
+): Promise<AdminCaller> {
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error(
+      '[Deploy-Bot] SUPABASE_SERVICE_ROLE_KEY is not configured — the caller role cannot be verified, so the request is refused.'
+    );
+    return {
+      ok: false,
+      response: json(
+        {
+          success: false,
+          error:
+            'Server authorization is not configured (missing service role secret), so bot deployment is disabled.',
+        },
+        500
+      ),
+    };
+  }
+
+  const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+  if (!jwt) {
+    return {
+      ok: false,
+      response: json(
+        { success: false, error: 'Authentication required: sign in as an administrator first.' },
+        401
+      ),
+    };
+  }
+
+  const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
+
+  let callerId = '';
+  try {
+    // An anon/publishable key is a valid project key but resolves to no user,
+    // so this is also what stops "call it with the public key" attempts.
+    const { data, error } = await supabaseAdmin.auth.getUser(jwt);
+    if (error || !data?.user?.id) {
+      return {
+        ok: false,
+        response: json(
+          { success: false, error: 'Authentication required: no valid user session on this request.' },
+          401
+        ),
+      };
+    }
+    callerId = data.user.id;
+  } catch (authErr) {
+    console.error(
+      '[Deploy-Bot] Caller verification failed:',
+      authErr instanceof Error ? authErr.message : String(authErr)
+    );
+    return {
+      ok: false,
+      response: json({ success: false, error: 'Unable to verify the current session.' }, 401),
+    };
+  }
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('role')
+    .eq('id', callerId)
+    .maybeSingle();
+
+  if (profileError) {
+    console.error('[Deploy-Bot] Role lookup failed:', profileError.message);
+    return {
+      ok: false,
+      response: json(
+        { success: false, error: 'Unable to verify your account role. No bot was deployed.' },
+        500
+      ),
+    };
+  }
+
+  if (profile?.role !== 'admin') {
+    console.warn(`[Deploy-Bot] Refused bot request from non-admin user ${callerId}.`);
+    return {
+      ok: false,
+      response: json(
+        {
+          success: false,
+          error: 'Admin privileges are required to deploy or control the meeting bot.',
+        },
+        403
+      ),
+    };
+  }
+
+  return { ok: true, userId: callerId };
+}
+
+// An admin may hand the meeting to the user who is allowed to read its results
+// (meetings.user_id is the existing ownership column the RLS policies use).
+// The id is validated against public.profiles server-side; it is an assignment
+// made by an already-verified admin, never an identity claim from the client.
+async function resolveMeetingOwner(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  adminUserId: string,
+  requestedOwnerId: unknown
+): Promise<{ ownerId: string | null; error?: string }> {
+  const candidate = String(requestedOwnerId ?? '').trim();
+  if (!candidate || candidate === adminUserId) {
+    return { ownerId: adminUserId };
+  }
+
+  if (!UUID_PATTERN.test(candidate)) {
+    return { ownerId: null, error: 'assign_to_user_id must be a valid user id' };
+  }
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return { ownerId: adminUserId };
+  }
+
+  const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id')
+    .eq('id', candidate)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[Deploy-Bot] Assigned owner lookup failed:', error.message);
+    return { ownerId: null, error: 'Unable to verify the assigned meeting owner.' };
+  }
+
+  if (!data?.id) {
+    return { ownerId: null, error: 'The assigned meeting owner is not a registered user.' };
+  }
+
+  return { ownerId: data.id };
+}
+
 serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -97,19 +250,26 @@ serve(async (req: Request): Promise<Response> => {
 
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co';
   const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+  // Authorization is only ever decided with the real service role key: the anon
+  // fallback below cannot read another user's profiles row, so using it here
+  // would turn "cannot verify" into "allow".
+  const AUTHZ_SERVICE_ROLE_KEY = sanitizeKey(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
 
-  // Without the service role we run as anon, and the meetings RLS policy
-  // (auth.uid() = user_id or user_id is null) then rejects any row we stamp
-  // with a real user_id — the bot deploys but no meeting row is ever created.
+  // Without the service role we run as anon: we could neither verify the
+  // caller's role nor insert a user-owned meetings row past RLS.
   if (!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) {
     console.warn(
-      '[Deploy-Bot] SUPABASE_SERVICE_ROLE_KEY secret is not set; falling back to the anon key. ' +
-        'Inserting a user-owned meetings row will be blocked by RLS. Set the secret.'
+      '[Deploy-Bot] SUPABASE_SERVICE_ROLE_KEY secret is not set; bot deployment is refused because ' +
+        'the caller role cannot be verified. Set the secret.'
     );
   }
 
   // Handle DELETE request to forcibly eject bot from call
   if (req.method === 'DELETE') {
+    // Ejecting a bot is a meeting control action, so it is admin-only too.
+    const ejectAuth = await requireAdminCaller(req, SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+    if (!ejectAuth.ok) return ejectAuth.response;
+
     try {
       const urlParams = new URL(req.url).searchParams;
       const botId = urlParams.get('bot_id');
@@ -146,6 +306,9 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const auth = await requireAdminCaller(req, SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+    if (!auth.ok) return auth.response;
+
     let payload: Record<string, any> = {};
     try {
       payload = await req.json();
@@ -160,22 +323,16 @@ serve(async (req: Request): Promise<Response> => {
       return json({ success: false, error: 'meeting_url is required' }, 400);
     }
 
-    let userId: string | null = null;
-    if (SUPABASE_URL && SERVICE_ROLE_KEY) {
-      const authHeader = req.headers.get('Authorization') ?? '';
-      const jwt = authHeader.replace(/^Bearer\s+/i, '').trim();
-      if (jwt) {
-        try {
-          const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-          const { data: userData } = await supabaseAdmin.auth.getUser(jwt);
-          if (userData?.user) {
-            userId = userData.user.id;
-          }
-        } catch (authErr) {
-          console.warn('JWT verification notice:', authErr);
-        }
-      }
+    const owner = await resolveMeetingOwner(
+      SUPABASE_URL,
+      AUTHZ_SERVICE_ROLE_KEY,
+      auth.userId,
+      payload.assign_to_user_id ?? payload.assignToUserId ?? payload.owner_user_id
+    );
+    if (!owner.ownerId) {
+      return json({ success: false, error: owner.error || 'Invalid meeting owner' }, 400);
     }
+    const userId: string = owner.ownerId;
 
     const webhookUrl = buildWebhookUrl();
     const webhookSecret = sanitizeKey(Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET'));
@@ -378,6 +535,7 @@ serve(async (req: Request): Promise<Response> => {
         bot_name: 'Revora Assistant',
         recording_mode: 'speaker_view',
         meeting_id: meetingId,
+        assigned_to: userId,
         status: 'pending',
         is_simulated: false,
         meeting_url: meetingUrl,

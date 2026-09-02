@@ -3,7 +3,6 @@ import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
-import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import ActionItemCard, { readActionItem } from '../components/ActionItemCard';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { 
@@ -278,9 +277,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               <div className="absolute -right-12 -bottom-12 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
             </div>
 
-            {/* Meeting Bot Deployer Component */}
-            <MeetingBotDeployer />
-
             {/* Live Pre-Meeting Briefing Feed */}
             <section>
               <BriefingCard meetingId={1} />
@@ -442,9 +438,10 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               ) : (
                 <div className="p-6 rounded-2xl bg-neutral-50 text-center space-y-2">
                   <Clock className="w-8 h-8 text-[#0084FF] mx-auto animate-pulse" />
-                  <h4 className="font-outfit font-bold text-base text-black">Awaiting Your First Meeting Bot</h4>
+                  <h4 className="font-outfit font-bold text-base text-black">No Meetings Shared With You Yet</h4>
                   <p className="text-xs text-black/60 max-w-[480px] mx-auto leading-relaxed">
-                    Enter a Google Meet, Zoom, or Teams URL above and click <strong>Deploy Bot</strong>. As soon as the call ends, your Gemini AI summary will land right here automatically!
+                    Your administrator schedules meetings and sends the Revora bot into the call. As soon as a meeting
+                    you have access to finishes, its Gemini AI summary, transcript, and action items land right here.
                   </p>
                 </div>
               )}

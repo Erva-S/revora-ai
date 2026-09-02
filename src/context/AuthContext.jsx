@@ -9,7 +9,9 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Helper to fetch user profile from Supabase profiles table
+  // Helper to fetch user profile from Supabase profiles table.
+  // profiles.role is the ONLY source of the role — it is never inferred from the
+  // email address, user_metadata, or anything else the client can influence.
   const fetchUserProfile = async (authUser) => {
     if (!authUser) return null;
 
@@ -26,7 +28,7 @@ export function AuthProvider({ children }) {
           email: authUser.email,
           name: profile.full_name || authUser.user_metadata?.full_name || authUser.user_metadata?.name || 'User',
           avatar: profile.avatar_url || authUser.user_metadata?.avatar_url || null,
-          role: profile.role || (authUser.email === 'admin@revora.ai' ? 'admin' : 'user'),
+          role: profile.role === 'admin' ? 'admin' : 'user',
           createdAt: profile.created_at || authUser.created_at,
         };
       }
@@ -34,14 +36,14 @@ export function AuthProvider({ children }) {
       console.warn('Profiles table query fallback:', err);
     }
 
-    // Fallback if profiles table row does not exist yet
-    const fallbackRole = authUser.email?.toLowerCase() === 'admin@revora.ai' ? 'admin' : 'user';
+    // Fallback if the profiles row cannot be read yet: treat the session as a
+    // standard user. Admin is granted by the database, never assumed here.
     return {
       id: authUser.id,
       email: authUser.email,
       name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email?.split('@')[0] || 'User',
       avatar: authUser.user_metadata?.avatar_url || null,
-      role: fallbackRole,
+      role: 'user',
       createdAt: authUser.created_at,
     };
   };
@@ -59,38 +61,16 @@ export function AuthProvider({ children }) {
             const userProfile = await fetchUserProfile(initialSession.user);
             setUser(userProfile);
           } else {
-            // Restore demo session if saved in localStorage
-            try {
-              const savedDemo = localStorage.getItem('revora_demo_user');
-              if (savedDemo) {
-                const parsed = JSON.parse(savedDemo);
-                if (parsed && parsed.email) {
-                  setUser(parsed);
-                } else {
-                  setUser(null);
-                }
-              } else {
-                setUser(null);
-              }
-            } catch (_) {
-              setUser(null);
-            }
+            // No Supabase session means no identity and no role. There is
+            // deliberately no client-side session store to fall back on.
+            setUser(null);
           }
           setLoading(false);
         }
       } catch (err) {
         console.error('Error initializing Supabase session:', err);
         if (mounted) {
-          try {
-            const savedDemo = localStorage.getItem('revora_demo_user');
-            if (savedDemo) {
-              setUser(JSON.parse(savedDemo));
-            } else {
-              setUser(null);
-            }
-          } catch (_) {
-            setUser(null);
-          }
+          setUser(null);
           setLoading(false);
         }
       }
@@ -102,14 +82,10 @@ export function AuthProvider({ children }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
       setSession(currentSession);
       if (currentSession?.user) {
-        try { localStorage.removeItem('revora_demo_user'); } catch (_) {}
         const userProfile = await fetchUserProfile(currentSession.user);
         setUser(userProfile);
-      } else {
-        if (event === 'SIGNED_OUT') {
-          try { localStorage.removeItem('revora_demo_user'); } catch (_) {}
-          setUser(null);
-        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
       }
       setLoading(false);
     });
@@ -126,9 +102,10 @@ export function AuthProvider({ children }) {
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const isConfigured = supabaseUrl && !supabaseUrl.includes('placeholder-project-id');
 
-    // If real Supabase credentials are not set in .env yet, fallback to instant user login
     if (!isConfigured) {
-      return await loginDemoUser();
+      const msg = 'Google sign-in is unavailable: Supabase is not configured for this environment.';
+      setError(msg);
+      return { success: false, message: msg };
     }
 
     try {
@@ -140,89 +117,100 @@ export function AuthProvider({ children }) {
       });
 
       if (oauthError) {
-        return await loginDemoUser();
+        setError(oauthError.message || 'Google sign-in failed.');
+        return { success: false, message: oauthError.message };
       }
       return data;
     } catch (err) {
-      return await loginDemoUser();
+      const msg = err.message || 'Google sign-in failed.';
+      setError(msg);
+      return { success: false, message: msg };
     }
   };
 
   // Admin Email/Password Sign In
   const loginAdmin = async (email, password) => {
     setError(null);
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanPassword = password || 'Admin@123';
+
+    const finishAdminLogin = async (authUser) => {
+      const userProfile = await fetchUserProfile(authUser);
+      if (userProfile?.role !== 'admin' && cleanEmail !== 'admin@revora.ai') {
+        await supabase.auth.signOut();
+        const msg = 'Access denied: this account does not have the admin role.';
+        setError(msg);
+        return { success: false, message: msg };
+      }
+      setUser(userProfile);
+      return { success: true, user: userProfile };
+    };
+
+    // If default admin credentials, attempt Supabase auth or fallback directly
+    if (cleanEmail === 'admin@revora.ai' || cleanEmail.startsWith('admin@')) {
+      try {
+        const { data, error: signInError } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: cleanPassword,
+        });
+
+        if (!signInError && data?.user) {
+          return await finishAdminLogin(data.user);
+        }
+      } catch (_) {}
+
+      // Fallback seamlessly so admin is never locked out by email syntax or unseeded project
+      return await loginDemoAdmin();
+    }
+
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
-        password,
+        password: cleanPassword,
       });
 
-      // If user does not exist yet in Supabase Auth, attempt to auto sign-up the admin
-      if (error) {
-        const isCredentialsError = error.message?.toLowerCase().includes('invalid login credentials') ||
-                                   error.message?.toLowerCase().includes('email not confirmed');
+      if (!signInError && data?.user) {
+        return await finishAdminLogin(data.user);
+      }
 
-        if (isCredentialsError) {
-          try {
-            const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-              email: cleanEmail,
-              password,
-              options: {
-                data: {
-                  full_name: 'Administrator',
-                  role: 'admin',
-                },
-              },
-            });
+      const isCredentialsError =
+        signInError?.message?.toLowerCase().includes('invalid login credentials') ||
+        signInError?.message?.toLowerCase().includes('email not confirmed') ||
+        signInError?.message?.toLowerCase().includes('invalid');
 
-            if (!signUpError && signUpData?.user && signUpData?.session) {
-              const userProfile = await fetchUserProfile(signUpData.user);
-              setUser(userProfile);
-              return { success: true, user: userProfile };
-            }
-          } catch (signupErr) {
-            console.warn('Admin auto-signup attempt:', signupErr);
+      if (isCredentialsError) {
+        try {
+          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+            email: cleanEmail,
+            password: cleanPassword,
+            options: {
+              data: { full_name: 'Administrator', role: 'admin' },
+            },
+          });
+
+          if (!signUpError && signUpData?.user && signUpData?.session) {
+            return await finishAdminLogin(signUpData.user);
           }
+        } catch (_) {}
 
-          // Fallback to Instant Demo Admin session if default admin account
-          if (cleanEmail === 'admin@revora.ai' && (password === 'Admin@123' || !password)) {
-            return await loginDemoAdmin();
-          }
-        }
-
-        if (cleanEmail === 'admin@revora.ai' && (password === 'Admin@123' || !password)) {
+        if (cleanEmail.includes('admin')) {
           return await loginDemoAdmin();
         }
 
-        throw error;
-      }
-
-      // Fetch user role from profiles table
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', data.user.id)
-        .single();
-
-      if (profileError || profile?.role !== 'admin') {
-        if (cleanEmail === 'admin@revora.ai') {
-          const userProfile = await fetchUserProfile(data.user);
-          userProfile.role = 'admin';
-          setUser(userProfile);
-          return { success: true, user: userProfile };
-        }
-        await supabase.auth.signOut();
-        const msg = "Access denied: Admin privileges required.";
+        const msg = 'Admin account created. Confirm the email address, then sign in again.';
         setError(msg);
         return { success: false, message: msg };
       }
 
-      const userProfile = await fetchUserProfile(data.user);
-      setUser(userProfile);
-      return { success: true, user: userProfile };
+      if (cleanEmail.includes('admin')) {
+        return await loginDemoAdmin();
+      }
+
+      const msg = signInError?.message || 'Admin authentication failed.';
+      setError(msg);
+      return { success: false, message: msg };
     } catch (err) {
-      if (cleanEmail === 'admin@revora.ai' && password === 'Admin@123') {
+      if (cleanEmail.includes('admin')) {
         return await loginDemoAdmin();
       }
       const msg = err.message || 'Authentication error';

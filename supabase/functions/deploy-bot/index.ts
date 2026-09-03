@@ -1,10 +1,20 @@
 // ====================================================================
 // REVORA — Edge Function: deploy-bot
 //
-// 1. Authenticates request JWT token (or extracts user_id)
-// 2. Dispatches bot via MeetingBaaS API (https://api.meetingbaas.com/v1/bots)
+// 1. AUTHORIZATION (fail-closed): the caller must present a real user JWT and
+//    must have profiles.role = 'admin'. Bot deployment is an admin-only
+//    operation, so a normal signed-in user calling this endpoint directly gets
+//    403 — hiding the button in the UI is not what protects it. Applies to
+//    POST (deploy) and DELETE (force the bot to leave) alike.
+// 2. Dispatches a bot via the MeetingBaaS v2 API (POST https://api.meetingbaas.com/v2/bots)
+//    with recording + transcription + callback + silence-based leave enabled.
 // 3. Surfaces MeetingBaaS API failures directly so the caller can see the real dispatch error.
-// 4. Persists the meeting row only after a bot is successfully created.
+// 4. Persists the meeting row only after a bot is successfully created, owned by
+//    the user the admin assigned it to (defaults to the admin themselves).
+//
+// NOTE: the v1 create-bot fields (webhook_url / automatic_leave / speech_to_text)
+// are IGNORED by v2 — that is why a v1-style bot joined but never recorded,
+// transcribed, or called back. This function speaks the v2 contract.
 // ====================================================================
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
@@ -36,6 +46,28 @@ function sanitizeKey(rawKey: string | undefined): string {
   return rawKey.replace(/^["'\s]+|["'\s]+$/g, '').trim();
 }
 
+// v2 accepts only these transcription providers and rejects anything else with
+// HTTP 400 — which kills the whole deploy, so the bot never even joins. The
+// legacy value "Default" (still present in the root .env) is one such value.
+// Mirror the reference implementation: normalize, and fall back to gladia.
+const V2_STT_PROVIDERS = new Set(['gladia', 'deepgram', 'assemblyai', 'speechmatics', 'soniox']);
+
+function transcriptionProvider(): string {
+  const raw = sanitizeKey(Deno.env.get('SPEECH_TO_TEXT_PROVIDER')).toLowerCase();
+  if (raw && !V2_STT_PROVIDERS.has(raw)) {
+    console.warn(`[Deploy-Bot] SPEECH_TO_TEXT_PROVIDER="${raw}" is not a v2 provider — using gladia instead.`);
+  }
+  return V2_STT_PROVIDERS.has(raw) ? raw : 'gladia';
+}
+
+// Bare origin for the MeetingBaaS REST API. We append the explicit /v2/...
+// paths ourselves, so strip any trailing slash or version suffix a value
+// like "https://api.meetingbaas.com/v2" might carry.
+function meetingBaasBaseUrl(): string {
+  const raw = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || 'https://api.meetingbaas.com').trim();
+  return raw.replace(/\/+$/, '').replace(/\/v[12]$/i, '');
+}
+
 function buildWebhookUrl(): string {
   const supabaseUrl = (Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co').replace(/\/$/, '');
   const configuredWebhookUrl = Deno.env.get('MEETINGBAAS_WEBHOOK_URL')?.trim();
@@ -60,6 +92,154 @@ function readResponseError(status: number, rawText: string): string {
   return `MeetingBaaS request failed with HTTP ${status}: ${rawText}`;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type AdminCaller =
+  | { ok: true; userId: string }
+  | { ok: false; response: Response };
+
+// Bot deployment is admin-only. The caller's role is read from public.profiles
+// with the service role (the single trusted source) — never from the request
+// body, user_metadata, or anything else the client can set. Anything we cannot
+// positively verify is rejected, so a misconfigured deployment fails closed
+// instead of silently deploying bots for anonymous callers.
+async function requireAdminCaller(
+  req: Request,
+  supabaseUrl: string,
+  serviceRoleKey: string
+): Promise<AdminCaller> {
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error(
+      '[Deploy-Bot] SUPABASE_SERVICE_ROLE_KEY is not configured — the caller role cannot be verified, so the request is refused.'
+    );
+    return {
+      ok: false,
+      response: json(
+        {
+          success: false,
+          error:
+            'Server authorization is not configured (missing service role secret), so bot deployment is disabled.',
+        },
+        500
+      ),
+    };
+  }
+
+  const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+  if (!jwt) {
+    return {
+      ok: false,
+      response: json(
+        { success: false, error: 'Authentication required: sign in as an administrator first.' },
+        401
+      ),
+    };
+  }
+
+  const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
+
+  let callerId = '';
+  try {
+    // An anon/publishable key is a valid project key but resolves to no user,
+    // so this is also what stops "call it with the public key" attempts.
+    const { data, error } = await supabaseAdmin.auth.getUser(jwt);
+    if (error || !data?.user?.id) {
+      return {
+        ok: false,
+        response: json(
+          { success: false, error: 'Authentication required: no valid user session on this request.' },
+          401
+        ),
+      };
+    }
+    callerId = data.user.id;
+  } catch (authErr) {
+    console.error(
+      '[Deploy-Bot] Caller verification failed:',
+      authErr instanceof Error ? authErr.message : String(authErr)
+    );
+    return {
+      ok: false,
+      response: json({ success: false, error: 'Unable to verify the current session.' }, 401),
+    };
+  }
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('role')
+    .eq('id', callerId)
+    .maybeSingle();
+
+  if (profileError) {
+    console.error('[Deploy-Bot] Role lookup failed:', profileError.message);
+    return {
+      ok: false,
+      response: json(
+        { success: false, error: 'Unable to verify your account role. No bot was deployed.' },
+        500
+      ),
+    };
+  }
+
+  if (profile?.role !== 'admin') {
+    console.warn(`[Deploy-Bot] Refused bot request from non-admin user ${callerId}.`);
+    return {
+      ok: false,
+      response: json(
+        {
+          success: false,
+          error: 'Admin privileges are required to deploy or control the meeting bot.',
+        },
+        403
+      ),
+    };
+  }
+
+  return { ok: true, userId: callerId };
+}
+
+// An admin may hand the meeting to the user who is allowed to read its results
+// (meetings.user_id is the existing ownership column the RLS policies use).
+// The id is validated against public.profiles server-side; it is an assignment
+// made by an already-verified admin, never an identity claim from the client.
+async function resolveMeetingOwner(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  adminUserId: string,
+  requestedOwnerId: unknown
+): Promise<{ ownerId: string | null; error?: string }> {
+  const candidate = String(requestedOwnerId ?? '').trim();
+  if (!candidate || candidate === adminUserId) {
+    return { ownerId: adminUserId };
+  }
+
+  if (!UUID_PATTERN.test(candidate)) {
+    return { ownerId: null, error: 'assign_to_user_id must be a valid user id' };
+  }
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return { ownerId: adminUserId };
+  }
+
+  const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id')
+    .eq('id', candidate)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[Deploy-Bot] Assigned owner lookup failed:', error.message);
+    return { ownerId: null, error: 'Unable to verify the assigned meeting owner.' };
+  }
+
+  if (!data?.id) {
+    return { ownerId: null, error: 'The assigned meeting owner is not a registered user.' };
+  }
+
+  return { ownerId: data.id };
+}
+
 serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -70,9 +250,26 @@ serve(async (req: Request): Promise<Response> => {
 
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co';
   const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+  // Authorization is only ever decided with the real service role key: the anon
+  // fallback below cannot read another user's profiles row, so using it here
+  // would turn "cannot verify" into "allow".
+  const AUTHZ_SERVICE_ROLE_KEY = sanitizeKey(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'));
+
+  // Without the service role we run as anon: we could neither verify the
+  // caller's role nor insert a user-owned meetings row past RLS.
+  if (!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) {
+    console.warn(
+      '[Deploy-Bot] SUPABASE_SERVICE_ROLE_KEY secret is not set; bot deployment is refused because ' +
+        'the caller role cannot be verified. Set the secret.'
+    );
+  }
 
   // Handle DELETE request to forcibly eject bot from call
   if (req.method === 'DELETE') {
+    // Ejecting a bot is a meeting control action, so it is admin-only too.
+    const ejectAuth = await requireAdminCaller(req, SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+    if (!ejectAuth.ok) return ejectAuth.response;
+
     try {
       const urlParams = new URL(req.url).searchParams;
       const botId = urlParams.get('bot_id');
@@ -83,9 +280,10 @@ serve(async (req: Request): Promise<Response> => {
 
       if (cleanKey && !cleanKey.includes('your_meetingbaas')) {
         const headers = { 'x-meeting-baas-api-key': cleanKey };
+        // v2: ask the bot to leave. (v1 used DELETE /bots/{id}; v2 exposes an
+        // explicit leave action.) Best effort — a bot that already left is fine.
         try {
-          await fetch(`https://api.meetingbaas.com/v1/bots/${botId}`, { method: 'DELETE', headers });
-          await fetch(`https://api.meetingbaas.com/bots/${botId}`, { method: 'DELETE', headers });
+          await fetch(`${meetingBaasBaseUrl()}/v2/bots/${botId}/leave`, { method: 'POST', headers });
         } catch (_) {}
       }
 
@@ -93,7 +291,7 @@ serve(async (req: Request): Promise<Response> => {
         const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
         await supabaseAdmin
           .from('meetings')
-          .update({ status: 'completed', ended_at: new Date().toISOString() })
+          .update({ ended_at: new Date().toISOString() })
           .eq('bot_id', botId);
       }
 
@@ -108,6 +306,9 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   try {
+    const auth = await requireAdminCaller(req, SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+    if (!auth.ok) return auth.response;
+
     let payload: Record<string, any> = {};
     try {
       payload = await req.json();
@@ -116,89 +317,153 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     const meetingUrl = String(payload.meeting_url || payload.meetingUrl || '').trim();
-    const title = payload.title ? String(payload.title).slice(0, 200) : 'Revora AI Assistant Sync';
+    const title = payload.title ? String(payload.title).slice(0, 200) : 'Revora';
 
     if (!meetingUrl) {
       return json({ success: false, error: 'meeting_url is required' }, 400);
     }
 
-    let userId: string | null = null;
-    if (SUPABASE_URL && SERVICE_ROLE_KEY) {
-      const authHeader = req.headers.get('Authorization') ?? '';
-      const jwt = authHeader.replace(/^Bearer\s+/i, '').trim();
-      if (jwt) {
-        try {
-          const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-          const { data: userData } = await supabaseAdmin.auth.getUser(jwt);
-          if (userData?.user) {
-            userId = userData.user.id;
-          }
-        } catch (authErr) {
-          console.warn('JWT verification notice:', authErr);
-        }
-      }
+    const owner = await resolveMeetingOwner(
+      SUPABASE_URL,
+      AUTHZ_SERVICE_ROLE_KEY,
+      auth.userId,
+      payload.assign_to_user_id ?? payload.assignToUserId ?? payload.owner_user_id
+    );
+    if (!owner.ownerId) {
+      return json({ success: false, error: owner.error || 'Invalid meeting owner' }, 400);
     }
+    const userId: string = owner.ownerId;
 
     const webhookUrl = buildWebhookUrl();
+    const webhookSecret = sanitizeKey(Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET'));
+    const botName = Deno.env.get('BOT_NAME')?.trim() || 'Revora Assistant';
+    const entryMessage =
+      Deno.env.get('BOT_ENTRY_MESSAGE')?.trim() ||
+      "Hi, I'm an AI assistant here to take notes for this meeting.";
+    const sttProvider = transcriptionProvider();
+    const botImageUrl = Deno.env.get('BOT_IMAGE_URL')?.trim() || undefined;
 
-    // Keep the payload aligned with the documented v1 create-bot contract.
+    const clampTimeout = (name: string, fallback: number): number => {
+      const n = Number(Deno.env.get(name));
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+    };
+
+    const waitingRoomTimeout = clampTimeout('BOT_WAITING_ROOM_TIMEOUT', 300);
+    const noOneJoinedTimeout = clampTimeout('BOT_NO_ONE_JOINED_TIMEOUT', 120);
+    const silenceTimeout = clampTimeout('BOT_SILENCE_TIMEOUT', 30);
+
+    // Hybrid dual-compatible payload containing both v1 and v2 property specifications.
+    // v1 properties: webhook_url, speech_to_text, automatic_leave
+    // v2 properties: callback_enabled/config, transcription_enabled/config, timeout_config
     const baasPayload = {
       meeting_url: meetingUrl,
-      bot_name: 'Revora Assistant',
+      bot_name: botName,
       recording_mode: 'speaker_view',
-      automatic_leave: {
-        waiting_room_timeout: 600,
-      },
+      entry_message: entryMessage,
+      ...(botImageUrl ? { bot_image: botImageUrl } : {}),
+
+      // v1 specification
       webhook_url: webhookUrl,
+      speech_to_text: {
+        provider: sttProvider,
+      },
+      automatic_leave: {
+        waiting_room_timeout: waitingRoomTimeout,
+        no_one_joined_timeout: noOneJoinedTimeout,
+        silence_timeout: silenceTimeout,
+      },
+
+      // v2 specification
+      transcription_enabled: true,
+      transcription_config: {
+        provider: sttProvider,
+      },
+      callback_enabled: true,
+      callback_config: {
+        url: webhookUrl,
+        method: 'POST',
+        ...(webhookSecret ? { secret: webhookSecret } : {}),
+      },
+      timeout_config: {
+        waiting_room_timeout: waitingRoomTimeout,
+        no_one_joined_timeout: noOneJoinedTimeout,
+        silence_timeout: silenceTimeout,
+      },
     };
 
     let botId: string | null = null;
     let dispatchError: string | null = null;
 
     if (cleanKey && !cleanKey.includes('your_meetingbaas_key_here')) {
-      const endpoint = 'https://api.meetingbaas.com/bots';
-      try {
-        console.log(`[Deploy-Bot] POSTing request to ${endpoint}...`);
-        const baasResp = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-meeting-baas-api-key': cleanKey,
-          },
-          body: JSON.stringify(baasPayload),
-        });
+      const baseUrl = meetingBaasBaseUrl();
+      // Determine primary and secondary endpoints.
+      // If MEETINGBAAS_API_BASE_URL explicitly ends with /v1, try v1 first then v2 fallback.
+      // Otherwise, default to v2 first (for v2 keys) then v1 fallback.
+      const rawEnvUrl = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || '').trim();
+      const preferV1 = /\/v1\/?$/i.test(rawEnvUrl);
 
-        const rawText = await baasResp.text();
-        let baasData: any = {};
+      const endpoints = preferV1
+        ? [`${baseUrl}/v1/bots`, `${baseUrl}/bots`, `${baseUrl}/v2/bots`]
+        : [`${baseUrl}/v2/bots`, `${baseUrl}/v1/bots`, `${baseUrl}/bots`];
+
+      const cleanEndpoints = [...new Set(endpoints)];
+
+      for (const endpoint of cleanEndpoints) {
         try {
-          baasData = rawText ? JSON.parse(rawText) : {};
-        } catch {
-          baasData = { message: rawText };
-        }
-
-        if (!baasResp.ok) {
-          dispatchError = readResponseError(baasResp.status, rawText);
-          console.error('[Deploy-Bot Error] MeetingBaaS rejected the bot request:', {
-            endpoint,
-            status: baasResp.status,
-            body: rawText,
+          console.log(`[Deploy-Bot] POSTing dispatch request to ${endpoint}...`);
+          const baasResp = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-meeting-baas-api-key': cleanKey,
+            },
+            body: JSON.stringify(baasPayload),
           });
-        } else {
-          botId = String(baasData.bot_id || baasData.id || '').trim();
-          if (!botId) {
-            dispatchError = `MeetingBaaS returned a successful response without a bot_id: ${rawText || '<empty response>'}`;
-            console.error('[Deploy-Bot Error] Missing bot_id in MeetingBaaS response:', {
+
+          const rawText = await baasResp.text();
+          let baasData: any = {};
+          try {
+            baasData = rawText ? JSON.parse(rawText) : {};
+          } catch {
+            baasData = { message: rawText };
+          }
+
+          if (!baasResp.ok) {
+            const errDetail = readResponseError(baasResp.status, rawText);
+            console.warn(`[Deploy-Bot Warning] Endpoint ${endpoint} returned HTTP ${baasResp.status}:`, rawText);
+
+            // If we hit wrong platform key or 404, attempt next endpoint fallback in list
+            if (
+              (baasResp.status === 401 && rawText.includes('WrongPlatformApiKey')) ||
+              baasResp.status === 404
+            ) {
+              dispatchError = errDetail;
+              continue;
+            }
+
+            dispatchError = errDetail;
+            console.error('[Deploy-Bot Error] MeetingBaaS rejected bot request:', {
               endpoint,
               status: baasResp.status,
               body: rawText,
             });
+            break;
           } else {
-            console.log(`[Deploy-Bot Success] Real bot launched: bot_id=${botId}`);
+            // Envelope format check: v2 uses data.bot_id, v1 uses bot_id or id directly
+            botId = String(baasData?.data?.bot_id || baasData?.bot_id || baasData?.id || '').trim();
+            if (!botId) {
+              dispatchError = `MeetingBaaS returned HTTP ${baasResp.status} without a valid bot_id: ${rawText || '<empty response>'}`;
+              console.error('[Deploy-Bot Error] Missing bot_id in response from:', endpoint);
+            } else {
+              console.log(`[Deploy-Bot Success] Bot launched via ${endpoint}: bot_id=${botId}`);
+              dispatchError = null;
+              break;
+            }
           }
+        } catch (netErr: any) {
+          dispatchError = netErr?.message || String(netErr) || 'MeetingBaaS network request failed';
+          console.error(`[Deploy-Bot Network Error] Unable to reach ${endpoint}:`, netErr);
         }
-      } catch (netErr: any) {
-        dispatchError = netErr?.message || String(netErr) || 'MeetingBaaS request failed';
-        console.error('[Deploy-Bot Network Error] Unable to reach MeetingBaaS:', netErr);
       }
     } else {
       dispatchError = 'MEETINGBAAS_API_KEY is missing or invalid';
@@ -270,6 +535,7 @@ serve(async (req: Request): Promise<Response> => {
         bot_name: 'Revora Assistant',
         recording_mode: 'speaker_view',
         meeting_id: meetingId,
+        assigned_to: userId,
         status: 'pending',
         is_simulated: false,
         meeting_url: meetingUrl,

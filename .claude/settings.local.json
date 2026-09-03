@@ -4,7 +4,29 @@
       "Bash(git -C \"C:/Users/ADMIN/OneDrive/Desktop/futurrizon-claude\" status)",
       "WebFetch(domain:docs.meetingbaas.com)",
       "WebFetch(domain:ai.google.dev)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(cat >> *)",
+      "Bash(sed -i \"s#'/tmp/proto/asm.mjs'#'./asm.mjs'#\" /tmp/proto/run.mjs)",
+      "Bash(node /tmp/proto/run.mjs)",
+      "Bash(echo \"---exit $?\")",
+      "Bash(timeout 180 npx --yes esbuild@0.21.5 --version)",
+      "Bash(node -e \"const d=require\\('/tmp/proto/data.json'\\); console.log\\(Object.keys\\(d\\)\\); console.log\\('utterances',d.utterances&&d.utterances.length\\); console.log\\('diar len',d.diarization&&d.diarization.length\\); console.log\\('meta keys',d.meta&&Object.keys\\(d.meta\\)\\);\")",
+      "Bash(mkdir -p /tmp/verify)",
+      "Bash(cp /tmp/proto/data.json /tmp/verify/data.json)",
+      "Bash(timeout 180 npx --yes esbuild@0.21.5 supabase/functions/meetingbaas-webhook/index.ts --loader=ts --format=esm --target=es2022 --outfile=/tmp/verify/fn.mjs)",
+      "Bash(timeout 180 npx --yes esbuild@0.21.5 supabase/functions/meetingbaas-webhook/index.ts --loader=ts --format=esm --target=es2022)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(timeout 180 npx --yes esbuild@0.21.5 supabase/functions/meetingbaas-webhook/index.ts --format=esm --target=es2022)",
+      "Bash(timeout 300 node run.mjs)",
+      "Bash(node -e ' *)",
+      "Bash(timeout 400 npm run build)",
+      "Bash(sed 's#globalThis.Deno = { env: { get: \\(k\\) => env\\\\[k\\\\] } };#globalThis.Deno = { env: { get: \\(k\\) => \\(k === \"GEMINI_API_KEY\" ? undefined : env[k]\\) } };#' run2.mjs)",
+      "Bash(timeout 300 node run3.mjs)",
+      "Bash(npm run *)",
+      "Bash(npx --yes esbuild@0.21.5 .verify-deploy-bot/index.ts --loader=ts --format=esm --target=es2022 --outfile=.verify-deploy-bot/index.mjs)",
+      "Bash(npx --yes esbuild@0.21.5 .verify-deploy-bot/index.ts --format=esm --target=es2022 --outfile=.verify-deploy-bot/index.mjs)",
+      "Bash(node .verify-deploy-bot/run.mjs)",
+      "Bash(supabase --version)"
     ]
   }
 }

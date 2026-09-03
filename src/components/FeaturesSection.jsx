@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Zap, Brain, Layers, Gauge, ShieldCheck, RefreshCw, CheckCircle2, ArrowRight, Sparkles, Cpu, Lock, Workflow } from 'lucide-react';
+import { Zap, Brain, Layers, Gauge, ShieldCheck, RefreshCw, CheckCircle2, ArrowRight, Sparkles, Cpu, Lock, Workflow, FileText } from 'lucide-react';
 
 export default function FeaturesSection({ onOpenTryModal }) {
   const [activeTab, setActiveTab] = useState(0);

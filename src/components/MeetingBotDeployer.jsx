@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { Bot, Video, ArrowRight, Loader2, CheckCircle2, AlertCircle, Sparkles, RefreshCw, Zap } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 
-export default function MeetingBotDeployer({ onBotDeployed }) {
+export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
   const [meetingUrl, setMeetingUrl] = useState('');
+  const [meetingTitle, setMeetingTitle] = useState('');
+  const [assignToUserId, setAssignToUserId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [botStatus, setBotStatus] = useState(null); // null | { botId, status, meetingUrl, deployedAt }
@@ -81,22 +83,32 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
     setError(null);
 
     try {
-      // Invoke Supabase Edge Function 'deploy-bot'
+      // Invoke Supabase Edge Function 'deploy-bot'. The function re-verifies the
+      // caller's admin role server-side; assign_to_user_id only decides which
+      // user is allowed to read the results afterwards.
       const { data, error: funcError } = await supabase.functions.invoke('deploy-bot', {
-        body: { meetingUrl: meetingUrl.trim() },
+        body: {
+          meetingUrl: meetingUrl.trim(),
+          ...(meetingTitle.trim() ? { title: meetingTitle.trim() } : {}),
+          ...(assignToUserId ? { assign_to_user_id: assignToUserId } : {}),
+        },
       });
-
-      if (data?.success === false || data?.error) {
-        throw new Error(data.error || 'Failed to dispatch bot.');
-      }
 
       if (funcError) {
         let detail = funcError.message;
         try {
-          const errCtx = await funcError.context?.json();
-          if (errCtx?.error) detail = errCtx.error;
+          if (typeof funcError.context?.json === 'function') {
+            const errCtx = await funcError.context.json();
+            if (errCtx?.error) detail = errCtx.error;
+          }
         } catch (_) {}
+        console.error('Edge Function invoke returned error:', funcError, detail);
         throw new Error(detail || 'Edge Function execution failed.');
+      }
+
+      if (data?.success === false || data?.error) {
+        console.error('Edge Function returned failure response:', data);
+        throw new Error(data.error || 'Failed to dispatch bot.');
       }
 
       const botId = data?.bot_id || data?.id;
@@ -110,6 +122,7 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
         meetingUrl: meetingUrl.trim(),
         botName: data?.bot_name || 'Revora Assistant',
         recordingMode: data?.recording_mode || 'speaker_view',
+        assignedTo: data?.assigned_to || null,
         deployedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         errorMessage: null,
         summary: null,
@@ -132,6 +145,7 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
   const handleReset = () => {
     setBotStatus(null);
     setMeetingUrl('');
+    setMeetingTitle('');
     setError(null);
   };
 
@@ -139,38 +153,37 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
     if (!botStatus?.botId) return;
     try {
       setLoading(true);
+      setBotStatus((current) => (current ? { ...current, status: 'leaving' } : null));
       await supabase.functions.invoke(`deploy-bot?bot_id=${botStatus.botId}`, {
         method: 'DELETE',
       });
-      setBotStatus(null);
     } catch (ejectErr) {
       console.warn('Eject bot notice:', ejectErr);
-      setBotStatus(null);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="p-6 sm:p-8 rounded-[28px] bg-white border border-black/10 shadow-lg relative overflow-hidden font-sans">
+    <div className="p-6 sm:p-8 rounded-[28px] bg-white border border-slate-200/80 shadow-xs relative overflow-hidden font-sans">
       {/* Decorative ambient background gradient */}
       <div className="absolute top-0 right-0 -mt-10 -mr-10 w-48 h-48 bg-gradient-to-br from-[#0084FF]/10 to-indigo-500/10 rounded-full blur-2xl pointer-events-none" />
 
       {/* Header Title */}
-      <div className="flex items-center justify-between pb-6 border-b border-black/5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-100">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-[#0084FF] to-[#0066CC] flex items-center justify-center text-white shadow-md">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-[#0084FF] to-[#0066CC] flex items-center justify-center text-white shadow-xs">
             <Bot className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="font-outfit font-black text-xl text-black flex items-center gap-2">
-              MeetingBaaS Bot Deployer
+            <h3 className="font-outfit font-black text-xl text-slate-900 flex items-center gap-2">
+              Revora AI Meeting Assistant
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-[#0084FF] uppercase tracking-wider">
-                Revora Assistant
+                Ready to Deploy
               </span>
             </h3>
-            <p className="text-xs text-black/60 mt-0.5">
-              Send an AI bot ("Revora Assistant") directly into your Zoom, Meet, or Teams call using MeetingBaaS.
+            <p className="text-xs text-slate-500 mt-0.5">
+              Deploy Revora into a live meeting and let it capture the meeting for transcription, summarization, and action-item generation.
             </p>
           </div>
         </div>
@@ -178,7 +191,7 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
         {botStatus && (
           <button
             onClick={handleReset}
-            className="px-3.5 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="px-3.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer w-fit"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             <span>Deploy Another Bot</span>
@@ -191,11 +204,11 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
         {!botStatus ? (
           <form onSubmit={handleDeployBot} className="space-y-4">
             <div>
-              <label htmlFor="meeting-url-input" className="block text-xs font-bold text-black/80 mb-2">
+              <label htmlFor="meeting-url-input" className="block text-xs font-bold text-slate-700 mb-2">
                 Live Meeting URL
               </label>
               <div className="relative flex items-center">
-                <div className="absolute left-3.5 text-black/40 pointer-events-none">
+                <div className="absolute left-3.5 text-slate-400 pointer-events-none">
                   <Video className="w-5 h-5" />
                 </div>
                 <input
@@ -206,14 +219,14 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                     setMeetingUrl(e.target.value);
                     if (error) setError(null);
                   }}
-                  placeholder="https://zoom.us/j/123456789 or https://meet.google.com/abc-defg-hij"
-                  className="w-full pl-11 pr-32 py-3.5 rounded-2xl bg-neutral-50 border border-black/10 focus:border-[#0084FF] focus:bg-white focus:ring-4 focus:ring-[#0084FF]/10 text-sm text-black placeholder:text-black/40 outline-none transition-all"
+                  placeholder="https://meet.google.com/... or https://zoom.us/j/..."
+                  className="w-full pl-11 pr-32 py-3.5 rounded-2xl bg-slate-50/70 border border-slate-200/90 focus:border-[#0084FF] focus:bg-white focus:ring-4 focus:ring-[#0084FF]/10 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-all"
                   disabled={loading}
                 />
 
                 {platform && (
                   <div className="absolute right-3">
-                    <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${platform.color} shadow-xs`}>
+                    <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${platform.color} shadow-2xs`}>
                       {platform.name}
                     </span>
                   </div>
@@ -221,34 +234,73 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
               </div>
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="meeting-title-input" className="block text-xs font-bold text-slate-700 mb-2">
+                  Meeting Title <span className="font-medium text-slate-400">(optional)</span>
+                </label>
+                <input
+                  id="meeting-title-input"
+                  type="text"
+                  value={meetingTitle}
+                  onChange={(e) => setMeetingTitle(e.target.value)}
+                  placeholder="Weekly Engineering Sync"
+                  maxLength={200}
+                  className="w-full px-4 py-3 rounded-2xl bg-slate-50/70 border border-slate-200/90 focus:border-[#0084FF] focus:bg-white focus:ring-4 focus:ring-[#0084FF]/10 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-all"
+                  disabled={loading}
+                />
+              </div>
+
+              {Array.isArray(assignableUsers) && assignableUsers.length > 0 && (
+                <div>
+                  <label htmlFor="meeting-owner-select" className="block text-xs font-bold text-slate-700 mb-2">
+                    Give Access To <span className="font-medium text-slate-400">(defaults to you)</span>
+                  </label>
+                  <select
+                    id="meeting-owner-select"
+                    value={assignToUserId}
+                    onChange={(e) => setAssignToUserId(e.target.value)}
+                    className="w-full px-3.5 py-3 rounded-2xl bg-slate-50/70 border border-slate-200/90 focus:border-[#0084FF] focus:bg-white focus:ring-4 focus:ring-[#0084FF]/10 text-sm text-slate-900 outline-none transition-all cursor-pointer"
+                    disabled={loading}
+                  >
+                    <option value="">Keep for admins only</option>
+                    {assignableUsers.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name || u.email} ({u.email})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
             {error && (
-              <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
+              <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs font-medium flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{error}</span>
               </div>
             )}
 
-            <div className="flex items-center justify-between pt-2">
-              <div className="flex items-center gap-2 text-xs text-black/50">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+              <div className="flex items-center gap-2 text-xs text-slate-500">
                 <Zap className="w-4 h-4 text-amber-500" />
-                <span>MeetingBaaS API + Gemini 3.5 Flash Lite Summarizer</span>
+                <span>MeetingBaaS Realtime Bot + Gemini 1.5 Intelligence</span>
               </div>
 
               <button
                 type="submit"
                 disabled={loading || !meetingUrl.trim()}
-                className="px-6 py-3.5 rounded-2xl bg-[#0084FF] hover:bg-[#0074E0] disabled:bg-neutral-200 text-white font-bold text-sm flex items-center gap-2.5 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:cursor-not-allowed"
+                className="px-6 py-3.5 rounded-2xl bg-[#0084FF] hover:bg-[#0074E0] disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold text-sm flex items-center justify-center gap-2.5 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:cursor-not-allowed shrink-0"
               >
                 {loading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Dispatching Bot...</span>
+                    <span>Deploying Bot...</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    <span>Deploy Bot</span>
-                    <ArrowRight className="w-4 h-4" />
+                    <span>Deploy Bot →</span>
                   </>
                 )}
               </button>
@@ -289,6 +341,8 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                   <span>
                     {botStatus.status === 'recording'
                       ? 'Recording'
+                      : botStatus.status === 'leaving'
+                      ? 'Leaving & Processing...'
                       : botStatus.status === 'summarized' || botStatus.status === 'completed'
                       ? 'Completed'
                       : botStatus.status === 'failed'
@@ -297,14 +351,16 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
                   </span>
                 </div>
 
-                <button
-                  onClick={handleEjectBot}
-                  disabled={loading}
-                  className="px-3.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
-                >
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  <span>Force Bot to Leave Call</span>
-                </button>
+                {botStatus.status !== 'summarized' && botStatus.status !== 'completed' && (
+                  <button
+                    onClick={handleEjectBot}
+                    disabled={loading || botStatus.status === 'leaving'}
+                    className="px-3.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 disabled:bg-neutral-100 disabled:text-black/40 border border-red-200 text-red-600 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    <span>{botStatus.status === 'leaving' ? 'Leaving Call...' : 'Force Bot to Leave Call'}</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -327,30 +383,103 @@ export default function MeetingBotDeployer({ onBotDeployed }) {
               </div>
             </div>
 
-            {/* Pipeline Status */}
-            <div className="p-4 rounded-xl bg-white/90 border border-sky-100 space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-black">
-                <span className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#0084FF] animate-ping" />
-                  MeetingBaaS Pipeline Status
-                </span>
-                <span className="text-[#0084FF] font-mono text-[11px]">Awaiting "complete" Webhook & Gemini AI</span>
-              </div>
+            {/* Dynamic Pipeline Status */}
+            {(() => {
+              const status = botStatus.status;
+              const summary = botStatus.summary;
+              const isDone = status === 'summarized' || status === 'completed';
+              const isFailed = status === 'failed';
+              const isLeaving = status === 'leaving';
+              const isRecording = status === 'recording' || status === 'in_call';
 
-              <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] text-center font-medium">
-                <div className="py-1.5 px-2 rounded-lg bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 flex items-center justify-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  <span>1. Bot Dispatched</span>
+              // Step 2 state & styling
+              let step2Text = '2. Awaiting Join';
+              let step2Style = 'bg-sky-100 text-[#0084FF] font-bold border border-sky-300 animate-pulse';
+              let step2Icon = <Loader2 className="w-3 h-3 animate-spin" />;
+
+              if (isRecording) {
+                step2Text = '2. In Call & Recording';
+                step2Style = 'bg-emerald-100 text-emerald-700 font-bold border border-emerald-300 animate-pulse';
+                step2Icon = <Video className="w-3 h-3" />;
+              } else if (isLeaving) {
+                step2Text = '2. Leaving Call...';
+                step2Style = 'bg-amber-100 text-amber-800 font-bold border border-amber-300 animate-pulse';
+                step2Icon = <Loader2 className="w-3 h-3 animate-spin" />;
+              } else if (isDone) {
+                step2Text = '2. Call Ended';
+                step2Style = 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-200';
+                step2Icon = <CheckCircle2 className="w-3 h-3 text-emerald-600" />;
+              } else if (isFailed) {
+                step2Text = '2. Call Interrupted';
+                step2Style = 'bg-red-50 text-red-700 font-bold border border-red-200';
+                step2Icon = <AlertCircle className="w-3 h-3 text-red-500" />;
+              }
+
+              // Step 3 state & styling
+              let step3Text = '3. Gemini AI Summary';
+              let step3Style = 'bg-neutral-100 text-black/50 border border-neutral-200';
+              let step3Icon = null;
+
+              if (isLeaving) {
+                step3Text = '3. Processing AI Insights...';
+                step3Style = 'bg-sky-100 text-[#0084FF] font-bold border border-sky-300 animate-pulse';
+                step3Icon = <Loader2 className="w-3 h-3 animate-spin" />;
+              } else if (isDone || summary) {
+                step3Text = summary ? '3. AI Summary Ready' : '3. Complete Transcript Ready';
+                step3Style = 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-200';
+                step3Icon = <CheckCircle2 className="w-3 h-3 text-emerald-600" />;
+              } else if (isFailed) {
+                step3Text = '3. AI Skipped';
+                step3Style = 'bg-red-50 text-red-700 font-bold border border-red-200';
+                step3Icon = <AlertCircle className="w-3 h-3 text-red-500" />;
+              }
+
+              // Header text
+              let headerNote = 'Awaiting Bot Join & Recording';
+              if (isRecording) headerNote = 'Active in Call — Recording Stream';
+              else if (isLeaving) headerNote = 'Bot Left — Processing Webhook & Gemini AI...';
+              else if (isDone) headerNote = 'Pipeline Complete! AI Summary Generated';
+              else if (isFailed) headerNote = 'Pipeline Stopped (Bot Failure)';
+
+              return (
+                <div className="p-4 rounded-xl bg-white/90 border border-sky-100 space-y-3">
+                  <div className="flex items-center justify-between text-xs font-bold text-black">
+                    <span className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${isDone ? 'bg-emerald-500' : isFailed ? 'bg-red-500' : 'bg-[#0084FF] animate-ping'}`} />
+                      MeetingBaaS Pipeline Status
+                    </span>
+                    <span className="text-[#0084FF] font-mono text-[11px]">{headerNote}</span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-[11px] text-center font-medium">
+                    <div className="py-1.5 px-2 rounded-lg bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 flex items-center justify-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                      <span>1. Bot Dispatched</span>
+                    </div>
+
+                    <div className={`py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 ${step2Style}`}>
+                      {step2Icon}
+                      <span>{step2Text}</span>
+                    </div>
+
+                    <div className={`py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 ${step3Style}`}>
+                      {step3Icon}
+                      <span>{step3Text}</span>
+                    </div>
+                  </div>
+
+                  {summary && (
+                    <div className="p-3.5 rounded-xl bg-emerald-50/90 border border-emerald-200 text-xs text-emerald-950 space-y-1 mt-2">
+                      <div className="flex items-center gap-1.5 font-bold text-emerald-800">
+                        <Sparkles className="w-4 h-4 text-emerald-600" />
+                        <span>AI Executive Summary Preview</span>
+                      </div>
+                      <p className="leading-relaxed text-black/80 font-sans">{summary}</p>
+                    </div>
+                  )}
                 </div>
-                <div className="py-1.5 px-2 rounded-lg bg-sky-100 text-[#0084FF] font-bold border border-sky-300 flex items-center justify-center gap-1 animate-pulse">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  <span>2. Awaiting Join Confirmation</span>
-                </div>
-                <div className="py-1.5 px-2 rounded-lg bg-neutral-100 text-black/50 border border-neutral-200">
-                  <span>3. Gemini 3.5 Flash</span>
-                </div>
-              </div>
-            </div>
+              );
+            })()}
           </div>
         )}
       </div>

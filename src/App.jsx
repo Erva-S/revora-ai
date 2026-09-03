@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import ProtectedRoute from './components/ProtectedRoute';
 import Navbar from './components/Navbar';
 import HeroSection from './components/HeroSection';
 import FeaturesSection from './components/FeaturesSection';
@@ -22,13 +24,17 @@ function MainApp() {
   const [currentView, setCurrentView] = useState(() => {
     return localStorage.getItem('revora_current_view') || 'home';
   });
+function LandingPage({ isLoginRoute = false }) {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   const [isTryModalOpen, setIsTryModalOpen] = useState(false);
   const [isFeatureModalOpen, setIsFeatureModalOpen] = useState(false);
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
   const [isGetStartedModalOpen, setIsGetStartedModalOpen] = useState(false);
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(isLoginRoute);
   const [activeFeatureId, setActiveFeatureId] = useState('transcription');
   const [initialPrompt, setInitialPrompt] = useState('');
 
@@ -46,6 +52,25 @@ function MainApp() {
       }
     }
   }, [user, currentView]);
+  // Handle URL query parameters (e.g. ?try=true)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('try') === 'true') {
+      setIsTryModalOpen(true);
+    }
+  }, [location.search]);
+
+  // Keep login modal open if on /login route and unauthenticated
+  useEffect(() => {
+    if (isLoginRoute && !user && !loading) {
+      setIsLoginModalOpen(true);
+    }
+  }, [isLoginRoute, user, loading]);
+
+  // If authenticated user visits /login, redirect to /dashboard
+  if (isLoginRoute && user && !loading) {
+    return <Navigate to={user.role === 'admin' ? '/admin-dashboard' : '/dashboard'} replace />;
+  }
 
   const handleOpenTryModal = (prompt = '') => {
     setInitialPrompt(prompt);
@@ -70,9 +95,9 @@ function MainApp() {
   const handleLoginSuccess = (authenticatedUser) => {
     setIsLoginModalOpen(false);
     if (authenticatedUser?.role === 'admin') {
-      setCurrentView('admin-dashboard');
+      navigate('/admin-dashboard');
     } else {
-      setCurrentView('dashboard');
+      navigate('/dashboard');
     }
   };
 
@@ -98,8 +123,13 @@ function MainApp() {
       />
     );
   }
+  const handleCloseLoginModal = () => {
+    setIsLoginModalOpen(false);
+    if (isLoginRoute) {
+      navigate('/');
+    }
+  };
 
-  // Render Main Landing Page
   return (
     <div className="min-h-screen bg-white text-[#171717] font-sans antialiased selection:bg-[#0084FF]/20 selection:text-[#0084FF] relative overflow-x-hidden">
       {/* Floating Liquid-Glass Navigation Bar */}
@@ -108,11 +138,10 @@ function MainApp() {
         onOpenGetStartedModal={() => setIsGetStartedModalOpen(true)}
         onOpenCompanyModal={() => setIsCompanyModalOpen(true)}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
-        onNavigateDashboard={handleNavigateDashboard}
       />
 
       {/* Main Content */}
-      <main>
+      <main id="home">
         {/* Section 1: Hero Landing Page */}
         <HeroSection
           onOpenTryModal={() => handleOpenTryModal('')}
@@ -173,9 +202,10 @@ function MainApp() {
       />
 
       {/* MODAL 6: Unified Login Modal */}
+      {/* MODAL 6: Authentication Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}
-        onClose={() => setIsLoginModalOpen(false)}
+        onClose={handleCloseLoginModal}
         onSuccessRedirect={handleLoginSuccess}
       />
     </div>
@@ -185,7 +215,97 @@ function MainApp() {
 export default function App() {
   return (
     <AuthProvider>
-      <MainApp />
+      <Routes>
+        {/* Public Landing Page */}
+        <Route path="/" element={<LandingPage />} />
+
+        {/* Dedicated /login route -> opens authentication or redirects to dashboard */}
+        <Route path="/login" element={<LandingPage isLoginRoute={true} />} />
+
+        {/* User Dashboard Overview */}
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <UserDashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Meetings Feed & Direct Meeting URL (/meetings/:id or /meeting/:id) */}
+        <Route
+          path="/meetings"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="meetings" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/meetings/:id"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="meetings" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/meeting/:id"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="meetings" />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Settings & Profile Pages */}
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="settings" />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <UserDashboard defaultTab="profile" />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Protected Admin Control Center */}
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin-dashboard"
+          element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+        {/* Admin meeting management lives on the same control center screen */}
+        <Route
+          path="/admin/meetings"
+          element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Fallback Catch-all -> Redirect to / */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </AuthProvider>
   );
 }

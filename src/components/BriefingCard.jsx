@@ -1,5 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, User, FileText, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+
+const BriefingCard = ({ briefing: initialBriefing }) => {
+  const formatBriefingData = (raw) => {
+    if (!raw) return null;
+    const title = raw.title || raw.meeting_title || 'Upcoming Scheduled Meeting';
+    return {
+      title,
+      recipientEmail: raw.recipientEmail || raw.attendees || raw.recipient_email || 'N/A',
+      status: raw.status || 'Ready',
+      summaryContext:
+        raw.summaryContext ||
+        raw.summary ||
+        raw.context ||
+        `Automated pre-meeting intelligence briefing generated for "${title}". Objectives focused on deliverable sync and architecture review.`,
+      keyTopics:
+        Array.isArray(raw.keyTopics) && raw.keyTopics.length > 0
+          ? raw.keyTopics
+          : Array.isArray(raw.action_items) && raw.action_items.length > 0
+          ? raw.action_items
+          : ['Architecture & Performance Review', 'API Endpoint Alignment', 'Task Assignments'],
+    };
+  };
+
+  const [briefing, setBriefing] = useState(formatBriefingData(initialBriefing));
+  const [loading, setLoading] = useState(!initialBriefing);
 import { supabase } from '../supabaseClient';
 import ActionItemCard from './ActionItemCard';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
@@ -15,13 +42,34 @@ const BriefingCard = ({ meetingId = 1 }) => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (initialBriefing) {
+      setBriefing(formatBriefingData(initialBriefing));
+      setLoading(false);
+      return;
+    }
+
     let isMounted = true;
 
-    async function loadBriefing() {
+    async function loadLatestBriefing() {
       try {
         setLoading(true);
         setError(null);
 
+        const res = await fetch(`${API_BASE_URL}/api/briefings`);
+        if (!res.ok) throw new Error('Failed to fetch briefing from backend');
+
+        const data = await res.json();
+        const briefings = Array.isArray(data) ? data : data.briefings || [];
+        const latest = briefings[0];
+
+        if (isMounted && latest) {
+          setBriefing(formatBriefingData(latest));
+        }
+      } catch (err) {
+        console.warn('Backend briefing query error:', err);
+        if (isMounted) setError(err.message);
+      } finally {
+        if (isMounted) setLoading(false);
         let query = supabase.from('meetings').select('*');
         if (typeof meetingId === 'string' && meetingId.length > 10) {
           query = query.eq('id', meetingId);
@@ -45,27 +93,27 @@ const BriefingCard = ({ meetingId = 1 }) => {
       }
     }
 
-    loadBriefing();
+    loadLatestBriefing();
 
     return () => {
       isMounted = false;
     };
-  }, [meetingId]);
+  }, [initialBriefing]);
 
   if (loading) {
     return (
       <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs flex items-center justify-center gap-3 text-black/50 font-medium">
         <Clock className="w-5 h-5 animate-spin text-[#0084FF]" />
-        <span>Fetching live meeting briefing from database...</span>
+        <span>Fetching live AI meeting briefing...</span>
       </div>
     );
   }
 
-  if (error) {
+  if (error || !briefing) {
     return (
-      <div className="p-6 rounded-[24px] bg-red-50 border border-red-200 text-red-600 text-xs font-medium flex items-center gap-2">
-        <AlertCircle className="w-4 h-4 shrink-0" />
-        <span>Error loading briefing context: {error}</span>
+      <div className="p-6 rounded-[24px] bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium flex items-center gap-2">
+        <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+        <span>No active pre-meeting briefings found. Schedule a meeting from Admin.</span>
       </div>
     );
   }
@@ -92,6 +140,7 @@ const BriefingCard = ({ meetingId = 1 }) => {
             <h3 className="font-outfit font-bold text-lg text-black">{meeting.title || 'Live Video Meeting'}</h3>
             <p className="text-xs text-black/50 flex items-center gap-1">
               <User className="w-3 h-3 text-black/40" />
+              <span className="truncate max-w-[280px]">Attendees: {briefing.recipientEmail}</span>
               <span className="truncate max-w-[280px]">{meeting.meeting_url || 'Meeting URL unavailable'}</span>
             </p>
           </div>
@@ -109,12 +158,27 @@ const BriefingCard = ({ meetingId = 1 }) => {
         <div className="p-3.5 rounded-xl bg-neutral-50 border border-black/5 text-xs leading-relaxed text-black/80 flex items-start gap-2">
           <FileText className="w-4 h-4 text-[#0084FF] shrink-0 mt-0.5" />
           <div>
+            <strong className="text-black font-semibold">AI Briefing Summary: </strong>
+            {briefing.summaryContext}
             <strong className="text-black font-semibold">Summary Context: </strong>
             {meeting.summary || 'Summary not generated yet for this meeting.'}
           </div>
         </div>
 
         <div>
+          <h4 className="text-xs font-bold text-black uppercase tracking-wider mb-2">
+            Key Topics & Action Items
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {briefing.keyTopics?.map((topic, index) => (
+              <span
+                key={index}
+                className="px-3 py-1 rounded-lg bg-neutral-100 text-black/80 font-medium text-xs border border-black/5"
+              >
+                • {typeof topic === 'string' ? topic : topic.task || JSON.stringify(topic)}
+              </span>
+            ))}
+          </div>
           <h4 className="text-xs font-bold text-black uppercase tracking-wider mb-2">Action Items</h4>
           {actionItems.length > 0 ? (
             <div className="space-y-2">

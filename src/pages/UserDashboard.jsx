@@ -7,25 +7,18 @@ import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import TaskExtractorModal from '../components/TaskExtractorModal';
 import AttendeePicker from '../components/AttendeePicker';
 import MeetingCalendar from '../components/MeetingCalendar';
-import { 
-  Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
-  RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
-  Layers, Search 
-} from 'lucide-react';
-import confetti from 'canvas-confetti';
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
-
-export default function UserDashboard({ onNavigateHome, onOpenTryModal }) {
 import ActionItemCard, { readActionItem } from '../components/ActionItemCard';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { 
   Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
-  RefreshCw, Clock, AlertCircle, Video, ExternalLink,
-  LayoutDashboard, Calendar, Settings, User as UserIcon,
+  RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
+  Layers, Search, AlertCircle, Video, ExternalLink,
+  LayoutDashboard, Settings, User as UserIcon,
   Key, LogIn
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultTab }) {
   const { user, logout } = useAuth();
@@ -247,19 +240,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <span className="hidden sm:inline">Schedule Meeting</span>
           </button>
 
-          <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-neutral-100 border border-black/5">
-            <img
-              src={user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face'}
-              alt="User Avatar"
-              className="w-7 h-7 rounded-full object-cover border border-white"
-            />
-            <div className="hidden sm:flex flex-col text-left leading-tight">
-              <span className="font-bold text-xs text-black">{user?.name || 'Standard User'}</span>
-              <span className="text-[10px] text-black/50">{user?.email}</span>
-            </div>
-          </div>
-        {/* Logged in User Badge (Navigates to Profile) */}
-        <div className="flex items-center gap-4">
           {user ? (
             <button
               onClick={() => navigate('/profile')}
@@ -309,35 +289,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <span>Overview</span>
           </button>
 
-      {/* Main Content Layout */}
-      <main className="max-w-[1280px] mx-auto px-6 py-8 space-y-8">
-        
-        {/* Welcome Hero Card */}
-        <div className="p-8 rounded-[28px] bg-gradient-to-br from-[#0084FF] to-[#0066CC] text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">
-          <div className="relative z-10 max-w-[600px]">
-            <span className="px-3 py-1 rounded-full bg-white/20 text-xs font-bold uppercase tracking-wider">
-              Authenticated Session • Role: {user?.role || 'user'}
-            </span>
-            <h1 className="font-outfit font-black text-[30px] sm:text-[36px] leading-tight mt-3">
-              Welcome back, {user?.name || 'User'}!
-            </h1>
-            <p className="font-sans text-sm text-white/80 mt-2 leading-relaxed">
-              Your Revora AI assistant is active and ready to schedule meetings, transcribe live calls, and extract action items.
-            </p>
-          </div>
-
-          {/* Hero Action Button: Launch Assistant */}
-          <div className="relative z-10 flex items-center gap-3">
-            <button
-              onClick={onOpenTryModal}
-              className="px-6 py-3 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer flex items-center gap-2"
-            >
-              <Sparkles className="w-4 h-4 text-[#0084FF]" />
-              <span>Launch Assistant</span>
-            </button>
-          </div>
-
-          <div className="absolute -right-12 -bottom-12 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
           <button
             onClick={() => navigate('/meetings')}
             className={`px-3 py-2 rounded-xl flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap ${
@@ -381,58 +332,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
         </div>
       </div>
 
-        {/* Meeting Bot Deployer Component */}
-        <MeetingBotDeployer />
-
-        {/* Interactive Meeting Calendar */}
-        <MeetingCalendar
-          meetings={meetingsList}
-          briefings={briefingsList}
-          onSelectMeeting={(m) => setSelectedMeeting(m)}
-        />
-
-        {/* Live Pre-Meeting Briefing Feed with Archive Button */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <h3 className="font-outfit font-bold text-lg text-black">Latest Pre-Meeting Briefing</h3>
-              {briefingsList.length > 0 && (
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 text-[#0084FF]">
-                  Active
-                </span>
-              )}
-            </div>
-
-            {briefingsList.length > 1 && (
-              <button
-                onClick={() => setIsArchiveModalOpen(true)}
-                className="px-3.5 py-1.5 rounded-xl bg-white border border-black/10 hover:border-[#0084FF]/40 text-xs font-bold text-black/80 hover:text-[#0084FF] flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
-              >
-                <Layers className="w-3.5 h-3.5 text-[#0084FF]" />
-                <span>View All Briefings ({briefingsList.length})</span>
-              </button>
-            )}
-          </div>
-
-          {briefingsList.length > 0 ? (
-            <BriefingCard briefing={briefingsList[0]} />
-          ) : (
-            <div className="p-6 rounded-2xl bg-white border border-black/10 text-center space-y-2">
-              <Sparkles className="w-6 h-6 text-[#0084FF] mx-auto animate-pulse" />
-              <h4 className="font-bold text-sm text-black">No Pre-Meeting Briefings Scheduled Yet</h4>
-              <p className="text-xs text-black/50 max-w-[420px] mx-auto">
-                Use the Schedule Meeting button in the top header to automatically generate and email an AI briefing to attendees.
-              </p>
-            </div>
-          )}
-        </section>
-
-        {/* Quick Tools Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs flex flex-col justify-between">
-            <div>
-              <div className="w-10 h-10 rounded-2xl bg-sky-100 text-[#0084FF] flex items-center justify-center mb-4">
-                <Mic className="w-5 h-5" />
       {/* Main Content Layout */}
       <main className="max-w-[1280px] mx-auto px-6 py-8 space-y-8">
         
@@ -449,28 +348,68 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   Welcome back, {user?.name || 'User'}!
                 </h1>
                 <p className="font-sans text-sm text-white/80 mt-2 leading-relaxed">
-                  Your Revora AI assistant is active and ready to transcribe streams, summarize PDFs, and extract tasks.
+                  Your Revora AI assistant is active and ready to schedule meetings, transcribe live calls, and extract action items.
                 </p>
               </div>
 
-              <button
-                onClick={handleLaunchAssistant}
-                className="relative z-10 px-6 py-3.5 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer shrink-0 flex items-center gap-2"
-              >
-                <Sparkles className="w-4 h-4 text-[#0084FF]" />
-                <span>Launch Revora Assistant</span>
-              </button>
+              {/* Hero Action Button: Launch Assistant */}
+              <div className="relative z-10 flex items-center gap-3">
+                <button
+                  onClick={handleLaunchAssistant}
+                  className="px-6 py-3 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer flex items-center gap-2"
+                >
+                  <Sparkles className="w-4 h-4 text-[#0084FF]" />
+                  <span>Launch Assistant</span>
+                </button>
+              </div>
 
               <div className="absolute -right-12 -bottom-12 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
             </div>
 
-          <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs flex flex-col justify-between">
-            <div>
-              <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center mb-4">
-                <FileText className="w-5 h-5" />
-            {/* Live Pre-Meeting Briefing Feed */}
-            <section>
-              <BriefingCard meetingId={1} />
+            {/* Meeting Bot Deployer Component */}
+            <MeetingBotDeployer />
+
+            {/* Interactive Meeting Calendar */}
+            <MeetingCalendar
+              meetings={meetingsList}
+              briefings={briefingsList}
+              onSelectMeeting={(m) => setSelectedMeeting(m)}
+            />
+
+            {/* Live Pre-Meeting Briefing Feed with Archive Button */}
+            <section className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <h3 className="font-outfit font-bold text-lg text-black">Latest Pre-Meeting Briefing</h3>
+                  {briefingsList.length > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 text-[#0084FF]">
+                      Active
+                    </span>
+                  )}
+                </div>
+
+                {briefingsList.length > 1 && (
+                  <button
+                    onClick={() => setIsArchiveModalOpen(true)}
+                    className="px-3.5 py-1.5 rounded-xl bg-white border border-black/10 hover:border-[#0084FF]/40 text-xs font-bold text-black/80 hover:text-[#0084FF] flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-[#0084FF]" />
+                    <span>View All Briefings ({briefingsList.length})</span>
+                  </button>
+                )}
+              </div>
+
+              {briefingsList.length > 0 ? (
+                <BriefingCard briefing={briefingsList[0]} />
+              ) : (
+                <div className="p-6 rounded-2xl bg-white border border-black/10 text-center space-y-2">
+                  <Sparkles className="w-6 h-6 text-[#0084FF] mx-auto animate-pulse" />
+                  <h4 className="font-bold text-sm text-black">No Pre-Meeting Briefings Scheduled Yet</h4>
+                  <p className="text-xs text-black/50 max-w-[420px] mx-auto">
+                    Use the Schedule Meeting button in the top header to automatically generate and email an AI briefing to attendees.
+                  </p>
+                </div>
+              )}
             </section>
 
             {/* Quick Tools Grid */}
@@ -496,10 +435,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                 </button>
               </div>
 
-          <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs flex flex-col justify-between">
-            <div>
-              <div className="w-10 h-10 rounded-2xl bg-purple-100 text-purple-600 flex items-center justify-center mb-4">
-                <CheckSquare className="w-5 h-5" />
               <div className="p-6 rounded-[24px] bg-white border border-black/10 shadow-xs flex flex-col justify-between">
                 <div>
                   <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center mb-4">
@@ -530,23 +465,14 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   </p>
                 </div>
                 <button
-                  onClick={handleLaunchAssistant}
+                  onClick={() => setIsTaskModalOpen(true)}
                   className="mt-6 py-2.5 px-4 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <CheckSquare className="w-3.5 h-3.5" />
-                  <span>View Action Items</span>
+                  <span>Extract Action Items</span>
                 </button>
               </div>
             </div>
-            <button
-              onClick={() => setIsTaskModalOpen(true)}
-              className="mt-6 py-2.5 px-4 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <CheckSquare className="w-3.5 h-3.5" />
-              <span>Extract Action Items</span>
-            </button>
-          </div>
-        </div>
           </>
         )}
 
@@ -561,7 +487,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={fetchMeetings}
+                  onClick={() => { fetchMeetings(); fetchBriefings(); }}
                   disabled={loadingMeetings}
                   className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
@@ -574,20 +500,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => { fetchMeetings(); fetchBriefings(); }}
-                disabled={loadingMeetings}
-                className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${loadingMeetings ? 'animate-spin' : ''}`} />
-                <span>Refresh Feed</span>
-              </button>
-              <span className="px-3 py-1 rounded-full bg-sky-100 text-[#0084FF] text-xs font-bold font-mono">
-                {meetingsList.length} Meetings Recorded
-              </span>
-            </div>
-          </div>
             <div className="space-y-3">
               {meetingsList.length > 0 ? (
                 meetingsList.map((m) => (
@@ -737,14 +649,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                     </div>
                   </div>
                 </div>
-              ))
-            ) : (
-              <div className="p-6 rounded-2xl bg-neutral-50 text-center space-y-2">
-                <Clock className="w-8 h-8 text-[#0084FF] mx-auto animate-pulse" />
-                <h4 className="font-outfit font-bold text-base text-black">Awaiting Your First Meeting Bot</h4>
-                <p className="text-xs text-black/60 max-w-[480px] mx-auto leading-relaxed">
-                  Enter a Google Meet, Zoom, or Teams URL above and click <strong>Deploy Bot</strong>, or use <strong>Schedule Meeting</strong> in the top header to trigger pre-meeting AI intelligence briefs!
-                </p>
 
                 {/* Log Out button in Profile */}
                 {user ? (

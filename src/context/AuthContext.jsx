@@ -4,10 +4,24 @@ import { supabase } from '../supabaseClient';
 const AuthContext = createContext();
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  // Read stored user immediately on refresh
+  const [user, setUser] = useState(() => {
+    const saved = localStorage.getItem('revora_user');
+    return saved ? JSON.parse(saved) : null;
+  });
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Helper to persist user state
+  const persistUser = (userData) => {
+    setUser(userData);
+    if (userData) {
+      localStorage.setItem('revora_user', JSON.stringify(userData));
+    } else {
+      localStorage.removeItem('revora_user');
+    }
+  };
 
   // Helper to fetch user profile from Supabase profiles table
   const fetchUserProfile = async (authUser) => {
@@ -34,7 +48,6 @@ export function AuthProvider({ children }) {
       console.warn('Profiles table query fallback:', err);
     }
 
-    // Fallback if profiles table row does not exist yet
     const fallbackRole = authUser.email?.toLowerCase() === 'admin@revora.ai' ? 'admin' : 'user';
     return {
       id: authUser.id,
@@ -57,9 +70,7 @@ export function AuthProvider({ children }) {
           setSession(initialSession);
           if (initialSession?.user) {
             const userProfile = await fetchUserProfile(initialSession.user);
-            setUser(userProfile);
-          } else {
-            setUser(null);
+            persistUser(userProfile);
           }
           setLoading(false);
         }
@@ -71,14 +82,13 @@ export function AuthProvider({ children }) {
 
     initAuth();
 
-    // Listen to real-time auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
       setSession(currentSession);
       if (currentSession?.user) {
         const userProfile = await fetchUserProfile(currentSession.user);
-        setUser(userProfile);
-      } else {
-        setUser(null);
+        persistUser(userProfile);
+      } else if (event === 'SIGNED_OUT') {
+        persistUser(null);
       }
       setLoading(false);
     });
@@ -100,13 +110,10 @@ export function AuthProvider({ children }) {
         },
       });
 
-      if (oauthError) {
-        throw oauthError;
-      }
+      if (oauthError) throw oauthError;
       return data;
     } catch (err) {
       console.warn('Supabase Google OAuth fallback active:', err.message);
-      // Fallback for local development testing
       return await loginDemoUser();
     }
   };
@@ -126,7 +133,7 @@ export function AuthProvider({ children }) {
         role: 'admin',
         createdAt: new Date().toISOString(),
       };
-      setUser(adminObj);
+      persistUser(adminObj);
       return { success: true, user: adminObj };
     }
 
@@ -137,7 +144,6 @@ export function AuthProvider({ children }) {
       });
       if (error) throw error;
 
-      // Fetch user role from profiles table
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('role')
@@ -152,7 +158,7 @@ export function AuthProvider({ children }) {
       }
 
       const userProfile = await fetchUserProfile(data.user);
-      setUser(userProfile);
+      persistUser(userProfile);
       return { success: true, user: userProfile };
     } catch (err) {
       const msg = err.message || 'Invalid login credentials';
@@ -171,7 +177,7 @@ export function AuthProvider({ children }) {
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
       role: 'user',
     };
-    setUser(demoUserObj);
+    persistUser(demoUserObj);
     return { success: true, user: demoUserObj };
   };
 
@@ -182,8 +188,9 @@ export function AuthProvider({ children }) {
     } catch (err) {
       console.warn('Sign out error:', err);
     } finally {
-      setUser(null);
+      persistUser(null);
       setSession(null);
+      localStorage.removeItem('revora_current_view');
     }
   };
 

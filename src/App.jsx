@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import HeroSection from './components/HeroSection';
@@ -17,7 +17,12 @@ import AdminDashboard from './pages/AdminDashboard';
 
 function MainApp() {
   const { user } = useAuth();
-  const [currentView, setCurrentView] = useState('home'); // 'home' | 'dashboard' | 'admin-dashboard'
+
+  // Load saved view from localStorage or default to 'home'
+  const [currentView, setCurrentView] = useState(() => {
+    return localStorage.getItem('revora_current_view') || 'home';
+  });
+
   const [isTryModalOpen, setIsTryModalOpen] = useState(false);
   const [isFeatureModalOpen, setIsFeatureModalOpen] = useState(false);
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
@@ -26,6 +31,21 @@ function MainApp() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [activeFeatureId, setActiveFeatureId] = useState('transcription');
   const [initialPrompt, setInitialPrompt] = useState('');
+
+  // Keep localStorage in sync whenever currentView changes
+  useEffect(() => {
+    localStorage.setItem('revora_current_view', currentView);
+  }, [currentView]);
+
+  // If user logs out, make sure we redirect to home cleanly
+  useEffect(() => {
+    if (!user && (currentView === 'dashboard' || currentView === 'admin-dashboard')) {
+      const savedUser = localStorage.getItem('revora_user') || localStorage.getItem('user');
+      if (!savedUser) {
+        setCurrentView('home');
+      }
+    }
+  }, [user, currentView]);
 
   const handleOpenTryModal = (prompt = '') => {
     setInitialPrompt(prompt);
@@ -37,24 +57,18 @@ function MainApp() {
     setIsFeatureModalOpen(true);
   };
 
-  const handleNavigateDashboard = async () => {
-    if (!user) {
-      const res = await loginDemoUser();
-      if (res?.user?.role === 'admin') {
-        setCurrentView('admin-dashboard');
-      } else {
-        setCurrentView('dashboard');
-      }
-      return;
-    }
-    if (user.role === 'admin') {
+  const handleNavigateDashboard = () => {
+    if (user?.role === 'admin') {
       setCurrentView('admin-dashboard');
-    } else {
+    } else if (user) {
       setCurrentView('dashboard');
+    } else {
+      setIsLoginModalOpen(true);
     }
   };
 
   const handleLoginSuccess = (authenticatedUser) => {
+    setIsLoginModalOpen(false);
     if (authenticatedUser?.role === 'admin') {
       setCurrentView('admin-dashboard');
     } else {
@@ -62,11 +76,16 @@ function MainApp() {
     }
   };
 
-  // Render Protected Dashboards when view state changes
+  const handleLogoutNavigateHome = () => {
+    localStorage.removeItem('revora_current_view');
+    setCurrentView('home');
+  };
+
+  // Render Protected Dashboards
   if (currentView === 'dashboard') {
     return (
       <UserDashboard
-        onNavigateHome={() => setCurrentView('home')}
+        onNavigateHome={handleLogoutNavigateHome}
         onOpenTryModal={() => handleOpenTryModal('')}
       />
     );
@@ -75,7 +94,7 @@ function MainApp() {
   if (currentView === 'admin-dashboard') {
     return (
       <AdminDashboard
-        onNavigateHome={() => setCurrentView('home')}
+        onNavigateHome={handleLogoutNavigateHome}
       />
     );
   }
@@ -153,7 +172,7 @@ function MainApp() {
         onClose={() => setIsDemoModalOpen(false)}
       />
 
-      {/* MODAL 6: Unified Passport.js Login Modal (Google OAuth + Admin Local Strategy) */}
+      {/* MODAL 6: Unified Login Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}

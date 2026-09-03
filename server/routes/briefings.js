@@ -11,7 +11,18 @@ router.get('/', async (req, res) => {
     const meetings = await Meeting.findAll({
       order: [['createdAt', 'DESC']],
     });
-    res.json(meetings);
+
+    // Ensure scheduledAt is present in both camelCase and snake_case
+    const formattedMeetings = meetings.map((m) => {
+      const plain = m.toJSON();
+      return {
+        ...plain,
+        scheduledAt: plain.scheduledAt || null,
+        scheduled_at: plain.scheduledAt || null,
+      };
+    });
+
+    res.json(formattedMeetings);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -26,15 +37,18 @@ router.post('/', async (req, res) => {
       agenda || 'Align deliverables, review API integration, and discuss upcoming milestones.'
     }`;
 
-    // 1. Save Meeting to SQLite DB
+    // 1. Save Meeting with scheduledAt to Database
     const meeting = await Meeting.create({
       title: title || 'New Scheduled Meeting',
       recipientEmail: recipientEmail || 'attendee@company.com',
+      agenda: agenda || '',
+      scheduledAt: scheduledAt || null,
+      summaryContext: summaryText,
+      status: 'briefing_ready',
     });
 
     // 2. Dispatch Email Asynchronously
     if (recipientEmail) {
-      // Re-initialize transporter dynamically to guarantee env vars are loaded
       const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
@@ -81,6 +95,8 @@ router.post('/', async (req, res) => {
 
     res.status(201).json({
       ...meeting.toJSON(),
+      scheduledAt: meeting.scheduledAt,
+      scheduled_at: meeting.scheduledAt,
       summaryContext: summaryText,
       status: 'Sent & Ready',
     });

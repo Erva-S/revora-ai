@@ -1,7 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
-import { ShieldCheck, LogOut, Users, Database, RefreshCw, Lock, Check, Trash2, Calendar, Mail, Send, ShieldAlert, ArrowLeft, Clock } from 'lucide-react';
+import AttendeePicker from '../components/AttendeePicker';
+import MeetingCalendar from '../components/MeetingCalendar';
+import { 
+  ShieldCheck, LogOut, Users, Database, RefreshCw, Lock, Check, 
+  Trash2, Calendar, Send, ShieldAlert, ArrowLeft, Clock, PlusCircle, X, AlignLeft, CheckSquare
+} from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
@@ -10,10 +15,14 @@ export default function AdminDashboard({ onNavigateHome }) {
 
   // Component States
   const [usersList, setUsersList] = useState([]);
+  const [meetingsList, setMeetingsList] = useState([]);
+  const [briefingsList, setBriefingsList] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
+  const [selectedMeeting, setSelectedMeeting] = useState(null);
 
-  // New Meeting Form States
+  // Meeting Creation Modal States
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
   const [meetingDetails, setMeetingDetails] = useState('');
@@ -51,9 +60,41 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
+  // Fetch meetings list from Supabase
+  const fetchMeetings = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('meetings')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setMeetingsList(data);
+      }
+    } catch (err) {
+      console.warn('Admin meetings query notice:', err);
+    }
+  };
+
+  // Fetch briefings list from backend
+  const fetchBriefings = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/briefings`);
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.briefings || []);
+        setBriefingsList(list);
+      }
+    } catch (err) {
+      console.warn('Admin briefings query notice:', err);
+    }
+  };
+
   useEffect(() => {
     if (user && user.role === 'admin') {
       fetchUsers();
+      fetchMeetings();
+      fetchBriefings();
     }
   }, [user]);
 
@@ -88,6 +129,9 @@ export default function AdminDashboard({ onNavigateHome }) {
         setRecipientEmail('');
         setMeetingDetails('');
         setScheduledAt('');
+        setIsCreateModalOpen(false);
+        await fetchBriefings();
+        await fetchMeetings();
         setTimeout(() => setActionMessage(null), 6000);
       } else {
         alert(data.error || 'Failed to schedule meeting.');
@@ -143,25 +187,25 @@ export default function AdminDashboard({ onNavigateHome }) {
   // Single Gate: Check if user is logged in as Admin
   if (!user || user.role !== 'admin') {
     return (
-      <div className="min-h-screen bg-neutral-900 text-white flex items-center justify-center p-6 font-sans">
-        <div className="max-w-[480px] w-full p-8 rounded-[28px] bg-neutral-800 border border-red-500/30 shadow-2xl text-center space-y-5">
-          <div className="w-16 h-16 rounded-2xl bg-red-500/10 text-red-500 flex items-center justify-center mx-auto border border-red-500/20">
+      <div className="min-h-screen bg-neutral-50 text-neutral-900 flex items-center justify-center p-6 font-sans">
+        <div className="max-w-[480px] w-full p-8 rounded-[28px] bg-white border border-red-200 shadow-2xl text-center space-y-5">
+          <div className="w-16 h-16 rounded-2xl bg-red-50 text-red-500 flex items-center justify-center mx-auto border border-red-100">
             <ShieldAlert className="w-8 h-8" />
           </div>
-          <h2 className="font-outfit font-black text-2xl">Access Denied: Admin Required</h2>
-          <p className="text-xs text-neutral-400 leading-relaxed">
-            You are logged in as {user ? `"${user.email}" (${user.role})` : 'a guest user'}. Access requires an account with <code className="text-red-400 font-mono">role === 'admin'</code>.
+          <h2 className="font-outfit font-black text-2xl text-black">Access Denied: Admin Required</h2>
+          <p className="text-xs text-black/60 leading-relaxed">
+            You are logged in as {user ? `"${user.email}" (${user.role})` : 'a guest user'}. Access requires an account with <code className="text-red-500 font-mono">role === 'admin'</code>.
           </p>
           <div className="pt-2 flex gap-3">
             <button
               onClick={onNavigateHome}
-              className="flex-1 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs cursor-pointer transition-colors"
+              className="flex-1 py-3 rounded-xl bg-black/5 hover:bg-black/10 text-black font-bold text-xs cursor-pointer transition-colors"
             >
               Return Home
             </button>
             <button
               onClick={logout}
-              className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs cursor-pointer transition-colors"
+              className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs cursor-pointer transition-colors shadow-xs"
             >
               Sign Out & Switch Account
             </button>
@@ -175,50 +219,58 @@ export default function AdminDashboard({ onNavigateHome }) {
   const standardCount = usersList.filter((u) => u.role === 'user').length;
 
   return (
-    <div className="min-h-screen bg-neutral-900 text-neutral-100 font-sans">
+    <div className="min-h-screen bg-neutral-50 text-neutral-900 font-sans">
       {/* Top Header */}
-      <header className="sticky top-0 z-40 bg-neutral-900/90 backdrop-blur-md border-b border-neutral-800 px-6 py-4 flex items-center justify-between shadow-md">
+      <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-black/5 px-6 py-3.5 flex items-center justify-between shadow-xs">
         <div className="flex items-center gap-4">
           <button
             onClick={onNavigateHome}
-            className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors cursor-pointer"
+            className="p-2 rounded-xl bg-black/5 hover:bg-black/10 text-black/70 hover:text-black transition-colors cursor-pointer"
             title="Return to Main Page"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
 
-          <div className="font-fustat font-extrabold text-[20px] text-white flex items-center gap-2.5">
-            <div className="p-1 rounded-lg bg-white/95 border border-white/20 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
+          <div className="font-fustat font-extrabold text-[20px] text-black flex items-center gap-2.5">
+            <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
               <img src="/college-logo.png" alt="CHARUSAT Logo" className="h-6 w-auto object-contain" />
             </div>
-            <div className="h-4 w-[1px] bg-white/20 shrink-0 hidden sm:block" />
+            <div className="h-4 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
             <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white shrink-0">
               <ShieldCheck className="w-4 h-4" />
             </div>
             <span>Admin Control Center</span>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase">
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-50 text-amber-600 border border-amber-200 uppercase">
               Authenticated
             </span>
           </div>
         </div>
 
-        {/* Admin Session Badge */}
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3 px-3.5 py-1.5 rounded-xl bg-neutral-800 border border-neutral-700">
+        {/* Schedule Button & Admin Session Badge */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsCreateModalOpen(true)}
+            className="px-3.5 py-2 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs hover:scale-105 cursor-pointer"
+          >
+            <PlusCircle className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Schedule Meeting</span>
+          </button>
+
+          <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-neutral-100 border border-black/5">
             <img
               src={user?.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&crop=face'}
               alt="Admin Avatar"
               className="w-7 h-7 rounded-full object-cover border border-amber-400"
             />
             <div className="hidden sm:flex flex-col text-left leading-tight">
-              <span className="font-bold text-xs text-white">{user?.name || 'System Admin'}</span>
-              <span className="text-[10px] text-amber-400 font-mono">ROLE: ADMIN</span>
+              <span className="font-bold text-xs text-black">{user?.name || 'System Admin'}</span>
+              <span className="text-[10px] text-amber-600 font-mono font-bold">ROLE: ADMIN</span>
             </div>
           </div>
 
           <button
             onClick={logout}
-            className="px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+            className="px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Logout Admin</span>
@@ -231,164 +283,85 @@ export default function AdminDashboard({ onNavigateHome }) {
         
         {/* System Overview Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          <div className="p-5 rounded-[22px] bg-neutral-800/80 border border-neutral-700 shadow-md">
-            <div className="flex items-center justify-between text-neutral-400 text-xs font-mono mb-2">
+          <div className="p-5 rounded-[22px] bg-white border border-black/10 shadow-xs">
+            <div className="flex items-center justify-between text-black/50 text-xs font-mono mb-2">
               <span>TOTAL USERS</span>
               <Users className="w-4 h-4 text-[#0084FF]" />
             </div>
-            <div className="font-outfit font-black text-3xl text-white">{usersList.length}</div>
-            <div className="text-[11px] text-neutral-400 mt-1 font-sans">{standardCount} standard, {adminCount} admin</div>
+            <div className="font-outfit font-black text-3xl text-black">{usersList.length}</div>
+            <div className="text-[11px] text-black/50 mt-1 font-sans">{standardCount} standard, {adminCount} admin</div>
           </div>
 
-          <div className="p-5 rounded-[22px] bg-neutral-800/80 border border-neutral-700 shadow-md">
-            <div className="flex items-center justify-between text-neutral-400 text-xs font-mono mb-2">
+          <div className="p-5 rounded-[22px] bg-white border border-black/10 shadow-xs">
+            <div className="flex items-center justify-between text-black/50 text-xs font-mono mb-2">
               <span>ADMINISTRATORS</span>
-              <ShieldCheck className="w-4 h-4 text-amber-400" />
+              <ShieldCheck className="w-4 h-4 text-amber-500" />
             </div>
-            <div className="font-outfit font-black text-3xl text-amber-400">{adminCount}</div>
-            <div className="text-[11px] text-neutral-400 mt-1 font-sans">Full administrative privileges</div>
+            <div className="font-outfit font-black text-3xl text-amber-600">{adminCount}</div>
+            <div className="text-[11px] text-black/50 mt-1 font-sans">Full administrative privileges</div>
           </div>
 
-          <div className="p-5 rounded-[22px] bg-neutral-800/80 border border-neutral-700 shadow-md">
-            <div className="flex items-center justify-between text-neutral-400 text-xs font-mono mb-2">
+          <div className="p-5 rounded-[22px] bg-white border border-black/10 shadow-xs">
+            <div className="flex items-center justify-between text-black/50 text-xs font-mono mb-2">
               <span>DATABASE ENGINE</span>
-              <Database className="w-4 h-4 text-emerald-400" />
+              <Database className="w-4 h-4 text-emerald-600" />
             </div>
-            <div className="font-outfit font-bold text-xl text-white">Supabase DB</div>
-            <div className="text-[11px] text-emerald-400 mt-1 font-mono">PostgreSQL Connected</div>
+            <div className="font-outfit font-bold text-xl text-black">Supabase DB</div>
+            <div className="text-[11px] text-emerald-600 mt-1 font-mono font-bold">PostgreSQL Connected</div>
           </div>
 
-          <div className="p-5 rounded-[22px] bg-neutral-800/80 border border-neutral-700 shadow-md">
-            <div className="flex items-center justify-between text-neutral-400 text-xs font-mono mb-2">
+          <div className="p-5 rounded-[22px] bg-white border border-black/10 shadow-xs">
+            <div className="flex items-center justify-between text-black/50 text-xs font-mono mb-2">
               <span>SESSION SECURITY</span>
-              <Lock className="w-4 h-4 text-purple-400" />
+              <Lock className="w-4 h-4 text-purple-600" />
             </div>
-            <div className="font-outfit font-bold text-xl text-white">Supabase Auth</div>
-            <div className="text-[11px] text-purple-400 mt-1 font-mono">JWT & OAuth Security</div>
+            <div className="font-outfit font-bold text-xl text-black">Supabase Auth</div>
+            <div className="text-[11px] text-purple-600 mt-1 font-mono font-bold">JWT & OAuth Security</div>
           </div>
         </div>
 
         {actionMessage && (
-          <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center justify-between">
+          <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold flex items-center justify-between shadow-2xs">
             <div className="flex items-center gap-2">
-              <Check className="w-4 h-4" />
+              <Check className="w-4 h-4 text-emerald-600" />
               <span>{actionMessage}</span>
             </div>
           </div>
         )}
 
-        {/* Meeting Scheduler & AI Briefing Dispatch Form */}
-        <div className="p-6 rounded-[28px] bg-neutral-800/70 border border-neutral-700 shadow-xl space-y-5">
-          <div className="flex items-center gap-3 pb-3 border-b border-neutral-700">
-            <div className="w-9 h-9 rounded-xl bg-sky-500/10 text-[#0084FF] flex items-center justify-center border border-sky-500/20">
-              <Calendar className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-outfit font-bold text-xl text-white">Schedule Meeting & Dispatch AI Briefing</h3>
-              <p className="text-xs text-neutral-400">Schedules a meeting and automatically dispatches the Gemini AI briefing and emails.</p>
-            </div>
-          </div>
-
-          <form onSubmit={handleCreateMeeting} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-neutral-300 block">Meeting Title</label>
-                <input
-                  type="text"
-                  value={meetingTitle}
-                  onChange={(e) => setMeetingTitle(e.target.value)}
-                  placeholder="e.g. Q4 Strategy Sync & Product Architecture"
-                  className="w-full p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-[#0084FF]"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-neutral-300 block">Attendee Email(s)</label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-neutral-500 absolute left-3 top-3.5" />
-                  <input
-                    type="text"
-                    value={recipientEmail}
-                    onChange={(e) => setRecipientEmail(e.target.value)}
-                    placeholder="e.g. alex.user@revora.ai, sara@company.com"
-                    className="w-full pl-9 p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-[#0084FF]"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-neutral-300 block">Meeting Date & Time</label>
-                <div className="relative">
-                  <Clock className="w-4 h-4 text-neutral-500 absolute left-3 top-3.5" />
-                  <input
-                    type="datetime-local"
-                    value={scheduledAt}
-                    onChange={(e) => setScheduledAt(e.target.value)}
-                    className="w-full pl-9 p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white focus:outline-none focus:border-[#0084FF] [color-scheme:dark]"
-                    required
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-neutral-300 block">Meeting Context / Details (Optional)</label>
-              <textarea
-                value={meetingDetails}
-                onChange={(e) => setMeetingDetails(e.target.value)}
-                placeholder="e.g. Discuss Q4 UI/UX revamps, sub-50ms streaming latency targets, and budget approvals."
-                className="w-full h-24 p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs text-white placeholder:text-neutral-500 focus:outline-none focus:border-[#0084FF] resize-none"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={creatingMeeting}
-              className="py-3 px-6 rounded-xl bg-[#0084FF] hover:bg-sky-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer disabled:opacity-50"
-            >
-              {creatingMeeting ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Scheduling Meeting & AI Briefing...</span>
-                </>
-              ) : (
-                <>
-                  <Send className="w-4 h-4" />
-                  <span>Schedule Meeting & Enable Auto-Dispatch</span>
-                </>
-              )}
-            </button>
-          </form>
-        </div>
+        {/* Interactive Meeting Calendar */}
+        <MeetingCalendar
+          meetings={meetingsList}
+          briefings={briefingsList}
+          onSelectMeeting={(m) => setSelectedMeeting(m)}
+        />
 
         {/* User Management Table */}
-        <div className="p-6 rounded-[28px] bg-neutral-800/70 border border-neutral-700 shadow-xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-neutral-700">
+        <div className="p-6 rounded-[28px] bg-white border border-black/10 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-black/5">
             <div>
-              <h3 className="font-outfit font-bold text-xl text-white flex items-center gap-2">
+              <h3 className="font-outfit font-bold text-xl text-black flex items-center gap-2">
                 User Directory & Role Manager
               </h3>
-              <p className="text-xs text-neutral-400 mt-0.5">
+              <p className="text-xs text-black/50 mt-0.5">
                 Manage registered user credentials, switch roles between 'user' and 'admin', or revoke access.
               </p>
             </div>
 
             <button
-              onClick={fetchUsers}
+              onClick={() => { fetchUsers(); fetchMeetings(); fetchBriefings(); }}
               disabled={loadingUsers}
-              className="px-3.5 py-2 rounded-xl bg-neutral-700 hover:bg-neutral-600 text-white font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer w-fit"
+              className="px-3.5 py-2 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-black/80 font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer w-fit border border-black/5"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingUsers ? 'animate-spin' : ''}`} />
-              <span>Refresh Users</span>
+              <span>Refresh Directory</span>
             </button>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-sans">
               <thead>
-                <tr className="border-b border-neutral-700 text-neutral-400 font-mono text-[11px] uppercase tracking-wider">
+                <tr className="border-b border-black/5 text-black/50 font-mono text-[11px] uppercase tracking-wider">
                   <th className="pb-3 px-3">User Profile</th>
                   <th className="pb-3 px-3">Email Address</th>
                   <th className="pb-3 px-3">Current Role</th>
@@ -397,44 +370,44 @@ export default function AdminDashboard({ onNavigateHome }) {
                   <th className="pb-3 px-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neutral-700/50">
+              <tbody className="divide-y divide-black/5">
                 {usersList.map((u) => (
-                  <tr key={u.id} className="hover:bg-neutral-700/30 transition-colors">
+                  <tr key={u.id} className="hover:bg-neutral-50 transition-colors">
                     <td className="py-3.5 px-3">
                       <div className="flex items-center gap-3">
                         <img
                           src={u.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face'}
                           alt={u.name || 'User'}
-                          className="w-8 h-8 rounded-full object-cover border border-neutral-600"
+                          className="w-8 h-8 rounded-full object-cover border border-black/10"
                         />
-                        <span className="font-bold text-white text-sm">{u.name || 'User'}</span>
+                        <span className="font-bold text-black text-sm">{u.name || 'User'}</span>
                       </div>
                     </td>
 
-                    <td className="py-3.5 px-3 font-mono text-neutral-300">{u.email}</td>
+                    <td className="py-3.5 px-3 font-mono text-black/70">{u.email}</td>
 
                     <td className="py-3.5 px-3">
                       <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase font-mono border ${
                         u.role === 'admin'
-                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                          : 'bg-sky-500/10 text-sky-400 border-sky-500/30'
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-sky-50 text-[#0084FF] border-sky-200'
                       }`}>
                         {u.role}
                       </span>
                     </td>
 
-                    <td className="py-3.5 px-3 font-mono text-neutral-400">
-                      {u.googleId ? 'Google OAuth2' : 'Passport Local'}
+                    <td className="py-3.5 px-3 font-mono text-black/50">
+                      {u.googleId ? 'Google OAuth2' : 'Supabase Auth'}
                     </td>
 
-                    <td className="py-3.5 px-3 font-mono text-neutral-400">
+                    <td className="py-3.5 px-3 font-mono text-black/50">
                       {new Date(u.createdAt).toLocaleDateString()}
                     </td>
 
                     <td className="py-3.5 px-3 text-right space-x-2">
                       <button
                         onClick={() => handleToggleRole(u.id, u.role)}
-                        className="px-2.5 py-1.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-amber-300 font-bold text-[11px] cursor-pointer transition-colors"
+                        className="px-2.5 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-black font-bold text-[11px] cursor-pointer transition-colors border border-black/5"
                         title="Toggle role between user and admin"
                       >
                         {u.role === 'admin' ? 'Demote to User' : 'Promote to Admin'}
@@ -443,7 +416,7 @@ export default function AdminDashboard({ onNavigateHome }) {
                       {u.id !== user?.id && (
                         <button
                           onClick={() => handleDeleteUser(u.id)}
-                          className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 cursor-pointer transition-colors"
+                          className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 cursor-pointer transition-colors border border-red-100"
                           title="Delete user account"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -456,6 +429,181 @@ export default function AdminDashboard({ onNavigateHome }) {
             </table>
           </div>
         </div>
+
+        {/* Schedule Meeting Modal (Clean White Theme) */}
+        {isCreateModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+            <div className="bg-white rounded-[28px] max-w-[560px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[90vh] overflow-y-auto text-black">
+              <div className="flex items-center justify-between pb-3 border-b border-black/5">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-sky-100 text-[#0084FF] flex items-center justify-center">
+                    <PlusCircle className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-outfit font-bold text-lg text-black">Schedule New Meeting</h3>
+                    <p className="text-xs text-black/50">Auto-generate and email an AI briefing to attendees</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsCreateModalOpen(false)}
+                  className="p-1.5 rounded-xl hover:bg-black/5 text-black/60 hover:text-black transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateMeeting} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-black mb-1">
+                    Meeting Title <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Q4 Strategy Sync & Product Architecture"
+                    value={meetingTitle}
+                    onChange={(e) => setMeetingTitle(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black placeholder:text-black/40"
+                  />
+                </div>
+
+                {/* Attendee Directory Multi-Select Picker */}
+                <div>
+                  <AttendeePicker
+                    selectedEmails={recipientEmail}
+                    onChange={(emails) => setRecipientEmail(emails)}
+                    isDark={false}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-[#0084FF]" />
+                    <span>Scheduled Date & Time <span className="text-red-500">*</span></span>
+                  </label>
+                  <input
+                    type="datetime-local"
+                    required
+                    value={scheduledAt}
+                    onChange={(e) => setScheduledAt(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
+                    <AlignLeft className="w-3.5 h-3.5 text-[#0084FF]" />
+                    <span>Meeting Context & Agenda (Optional)</span>
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder="Briefly outline topics to cover, goals, or prerequisites for the Gemini AI brief..."
+                    value={meetingDetails}
+                    onChange={(e) => setMeetingDetails(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black placeholder:text-black/40 resize-none"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-black/5">
+                  <button
+                    type="button"
+                    onClick={() => setIsCreateModalOpen(false)}
+                    className="px-4 py-2.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={creatingMeeting}
+                    className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs shadow-md transition-all hover:scale-102 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {creatingMeeting ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Dispatching AI Brief...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Schedule & Auto-Dispatch</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Selected Meeting Details Modal */}
+        {selectedMeeting && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+            <div className="bg-white rounded-[28px] max-w-[640px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[85vh] overflow-y-auto">
+              <div className="flex items-center justify-between pb-4 border-b border-black/5">
+                <div>
+                  <h3 className="font-outfit font-bold text-xl text-black">
+                    {selectedMeeting.title || 'Meeting Summary & AI Insights'}
+                  </h3>
+                  <p className="text-xs text-black/50 font-mono mt-0.5">
+                    {selectedMeeting.bot_id ? `Bot ID: ${selectedMeeting.bot_id} • ` : ''}
+                    {selectedMeeting.meeting_url || selectedMeeting.recipient_email || 'Event Details'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSelectedMeeting(null)}
+                  className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+
+              {selectedMeeting.summary && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Executive Summary</h4>
+                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
+                    {selectedMeeting.summary}
+                  </div>
+                </div>
+              )}
+
+              {selectedMeeting.agenda && !selectedMeeting.summary && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Meeting Agenda</h4>
+                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
+                    {selectedMeeting.agenda}
+                  </div>
+                </div>
+              )}
+
+              {selectedMeeting.transcript && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
+                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto">
+                    {selectedMeeting.transcript}
+                  </div>
+                </div>
+              )}
+
+              {Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Assigned Action Items</h4>
+                  <div className="space-y-2">
+                    {selectedMeeting.action_items.map((item, idx) => (
+                      <div key={idx} className="p-3 rounded-xl bg-purple-50 border border-purple-100 text-xs text-purple-900 font-medium flex items-center justify-between">
+                        <span>{typeof item === 'string' ? item : item.task || JSON.stringify(item)}</span>
+                        {item.assignee && (
+                          <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-700 font-bold text-[10px]">
+                            {item.assignee}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
       </main>
     </div>

@@ -11,6 +11,10 @@ const Meeting = sequelize.define('Meeting', {
     type: DataTypes.STRING,
     allowNull: true
   },
+  scheduledAt: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
   startTime: {
     type: DataTypes.DATE,
     allowNull: true

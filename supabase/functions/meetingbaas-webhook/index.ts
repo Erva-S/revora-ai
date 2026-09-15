@@ -5,6 +5,9 @@
 // --no-verify-jwt; MeetingBaaS cannot present a Supabase JWT).
 //
 //   bot.status_change -> map data.status.code onto our meeting status
+//                        (including the platform's own end reasons -
+//                        all_participants_left / no_speaker / no_attendees /
+//                        call_ended - which is how a bot departure reaches us)
 //   bot.failed        -> mark the meeting failed with the real error
 //   bot.completed     -> assemble the transcript from MeetingBaaS artifacts,
 //                        audit speaker attribution with Gemini, summarise, and
@@ -863,16 +866,53 @@ type Stage =
   | 'completed'
   | 'processing_failed';
 
-function mapStatusChangeToStatus(
-  body: Record<string, any>,
-): { status: 'pending' | 'recording' | 'failed'; processing_stage: Stage; error_message?: string; ended_at?: string } | null {
+/** The raw MeetingBaaS status code from a payload ('' when absent). */
+function statusCodeFrom(body: Record<string, any>): string {
   const statusObj = body?.data?.status ?? body?.status;
   let code = '';
   if (typeof statusObj === 'string') code = statusObj;
   else if (statusObj && typeof statusObj === 'object') {
     code = String(statusObj.code || statusObj.value || statusObj.name || statusObj.status || '');
   }
-  code = code.toLowerCase().trim();
+  return code.toLowerCase().trim();
+}
+
+/**
+ * MeetingBaaS reasons that mean the bot is no longer in the meeting. They come
+ * from the platform's own end-of-meeting detection, and `all_participants_left`
+ * is the one that means "the last human participant left" - the bot watches the
+ * live attendee roster and leaves once nobody but the bot remains. MeetingBaaS
+ * exposes no participant join/leave event and no participant-count API for our
+ * server to poll, so these reasons are how a departure reaches us.
+ */
+function normalizeCode(code: string): string {
+  // The same reason is spelled differently across the platform:
+  // `allParticipantsLeft` internally, `ALL_PARTICIPANTS_LEFT` in the documented
+  // error codes, `all_participants_left` in payloads. Compare without
+  // separators so all three match.
+  return code.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+const MEETING_ENDED_CODES = [
+  'callended',
+  'allparticipantsleft',
+  'noattendees',
+  'nospeaker',
+  'recordingtimeout',
+  'botremoved',
+  'apirequeststop',
+  'apirequest',
+];
+
+function isMeetingEndedCode(code: string): boolean {
+  const c = normalizeCode(code);
+  return MEETING_ENDED_CODES.includes(c) || c.includes('ended') || c.includes('left');
+}
+
+function mapStatusChangeToStatus(
+  body: Record<string, any>,
+): { status: 'pending' | 'recording' | 'failed'; processing_stage: Stage; error_message?: string; ended_at?: string } | null {
+  const code = statusCodeFrom(body);
   if (!code) return null;
 
   const errorMessage = body?.data?.error_message || body?.error_message || body?.data?.error || body?.error || null;
@@ -895,6 +935,13 @@ function mapStatusChangeToStatus(
     };
   }
 
+  // Checked before the generic "recording..." branch below, because the
+  // platform's end reason `recording_timeout` also contains "recording" and
+  // must not be mistaken for a meeting that is still running.
+  if (isMeetingEndedCode(code)) {
+    return { status: 'recording', processing_stage: 'meeting_ended', ended_at: new Date().toISOString() };
+  }
+
   if (code.includes('recording') || code === 'in_call' || code === 'transcribing' || code === 'in_call_recording') {
     return { status: 'recording', processing_stage: 'meeting_in_progress' };
   }
@@ -905,10 +952,6 @@ function mapStatusChangeToStatus(
     code.includes('joining')
   ) {
     return { status: 'pending', processing_stage: 'bot_dispatched' };
-  }
-
-  if (code === 'call_ended' || code.includes('ended') || code.includes('left')) {
-    return { status: 'recording', processing_stage: 'meeting_ended' };
   }
 
   return null;
@@ -1003,6 +1046,13 @@ serve(async (req: Request): Promise<Response> => {
 
     const mapped = mapStatusChangeToStatus(body);
     if (mapped && existing?.status !== 'summarized') {
+      if (mapped.processing_stage === 'meeting_ended') {
+        const endedCode = statusCodeFrom(body);
+        console.log(
+          `[MeetingBaaS] Bot left the meeting (reason=${endedCode || 'unknown'}) bot_id=${botId}` +
+            (endedCode === 'all_participants_left' ? ' - no human participants remained.' : '')
+        );
+      }
       await updateMeetingByBotId(supabaseAdmin, botId, { ...mapped, raw_payload: body });
       return json({ success: true, event: eventType, bot_id: botId, status: mapped.status, stage: mapped.processing_stage }, 200);
     }

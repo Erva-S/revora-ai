@@ -17,13 +17,6 @@ import LoginModal from './components/LoginModal';
 import UserDashboard from './pages/UserDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 
-function MainApp() {
-  const { user } = useAuth();
-
-  // Load saved view from localStorage or default to 'home'
-  const [currentView, setCurrentView] = useState(() => {
-    return localStorage.getItem('revora_current_view') || 'home';
-  });
 function LandingPage({ isLoginRoute = false }) {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
@@ -38,20 +31,6 @@ function LandingPage({ isLoginRoute = false }) {
   const [activeFeatureId, setActiveFeatureId] = useState('transcription');
   const [initialPrompt, setInitialPrompt] = useState('');
 
-  // Keep localStorage in sync whenever currentView changes
-  useEffect(() => {
-    localStorage.setItem('revora_current_view', currentView);
-  }, [currentView]);
-
-  // If user logs out, make sure we redirect to home cleanly
-  useEffect(() => {
-    if (!user && (currentView === 'dashboard' || currentView === 'admin-dashboard')) {
-      const savedUser = localStorage.getItem('revora_user') || localStorage.getItem('user');
-      if (!savedUser) {
-        setCurrentView('home');
-      }
-    }
-  }, [user, currentView]);
   // Handle URL query parameters (e.g. ?try=true)
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -84,9 +63,9 @@ function LandingPage({ isLoginRoute = false }) {
 
   const handleNavigateDashboard = () => {
     if (user?.role === 'admin') {
-      setCurrentView('admin-dashboard');
+      navigate('/admin-dashboard');
     } else if (user) {
-      setCurrentView('dashboard');
+      navigate('/dashboard');
     } else {
       setIsLoginModalOpen(true);
     }
@@ -101,28 +80,6 @@ function LandingPage({ isLoginRoute = false }) {
     }
   };
 
-  const handleLogoutNavigateHome = () => {
-    localStorage.removeItem('revora_current_view');
-    setCurrentView('home');
-  };
-
-  // Render Protected Dashboards
-  if (currentView === 'dashboard') {
-    return (
-      <UserDashboard
-        onNavigateHome={handleLogoutNavigateHome}
-        onOpenTryModal={() => handleOpenTryModal('')}
-      />
-    );
-  }
-
-  if (currentView === 'admin-dashboard') {
-    return (
-      <AdminDashboard
-        onNavigateHome={handleLogoutNavigateHome}
-      />
-    );
-  }
   const handleCloseLoginModal = () => {
     setIsLoginModalOpen(false);
     if (isLoginRoute) {
@@ -138,6 +95,7 @@ function LandingPage({ isLoginRoute = false }) {
         onOpenGetStartedModal={() => setIsGetStartedModalOpen(true)}
         onOpenCompanyModal={() => setIsCompanyModalOpen(true)}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
+        onNavigateDashboard={handleNavigateDashboard}
       />
 
       {/* Main Content */}
@@ -201,7 +159,6 @@ function LandingPage({ isLoginRoute = false }) {
         onClose={() => setIsDemoModalOpen(false)}
       />
 
-      {/* MODAL 6: Unified Login Modal */}
       {/* MODAL 6: Authentication Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}

@@ -4,26 +4,11 @@ import { supabase } from '../supabaseClient';
 const AuthContext = createContext();
 
 export function AuthProvider({ children }) {
-  // Read stored user immediately on refresh
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('revora_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [user, setUser] = useState(null);
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Helper to persist user state
-  const persistUser = (userData) => {
-    setUser(userData);
-    if (userData) {
-      localStorage.setItem('revora_user', JSON.stringify(userData));
-    } else {
-      localStorage.removeItem('revora_user');
-    }
-  };
-
-  // Helper to fetch user profile from Supabase profiles table
   // Helper to fetch user profile from Supabase profiles table.
   // profiles.role is the ONLY source of the role — it is never inferred from the
   // email address, user_metadata, or anything else the client can influence.
@@ -51,7 +36,6 @@ export function AuthProvider({ children }) {
       console.warn('Profiles table query fallback:', err);
     }
 
-    const fallbackRole = authUser.email?.toLowerCase() === 'admin@revora.ai' ? 'admin' : 'user';
     // Fallback if the profiles row cannot be read yet: treat the session as a
     // standard user. Admin is granted by the database, never assumed here.
     return {
@@ -75,7 +59,6 @@ export function AuthProvider({ children }) {
           setSession(initialSession);
           if (initialSession?.user) {
             const userProfile = await fetchUserProfile(initialSession.user);
-            persistUser(userProfile);
             setUser(userProfile);
           } else {
             // No Supabase session means no identity and no role. There is
@@ -95,13 +78,11 @@ export function AuthProvider({ children }) {
 
     initAuth();
 
+    // Listen to real-time auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
       setSession(currentSession);
       if (currentSession?.user) {
         const userProfile = await fetchUserProfile(currentSession.user);
-        persistUser(userProfile);
-      } else if (event === 'SIGNED_OUT') {
-        persistUser(null);
         setUser(userProfile);
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
@@ -135,11 +116,6 @@ export function AuthProvider({ children }) {
         },
       });
 
-      if (oauthError) throw oauthError;
-      return data;
-    } catch (err) {
-      console.warn('Supabase Google OAuth fallback active:', err.message);
-      return await loginDemoUser();
       if (oauthError) {
         setError(oauthError.message || 'Google sign-in failed.');
         return { success: false, message: oauthError.message };
@@ -155,20 +131,6 @@ export function AuthProvider({ children }) {
   // Admin Email/Password Sign In
   const loginAdmin = async (email, password) => {
     setError(null);
-    const cleanEmail = email.trim().toLowerCase();
-
-    // Local admin login check fallback
-    if (cleanEmail === 'admin@revora.ai' && (password === 'admin123' || password === 'admin')) {
-      const adminObj = {
-        id: 'admin_user_001',
-        email: 'admin@revora.ai',
-        name: 'System Admin',
-        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&crop=face',
-        role: 'admin',
-        createdAt: new Date().toISOString(),
-      };
-      persistUser(adminObj);
-      return { success: true, user: adminObj };
     const cleanEmail = (email || '').trim().toLowerCase();
     const cleanPassword = password || 'Admin@123';
 
@@ -207,11 +169,6 @@ export function AuthProvider({ children }) {
         password: cleanPassword,
       });
 
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', data.user.id)
-        .single();
       if (!signInError && data?.user) {
         return await finishAdminLogin(data.user);
       }
@@ -245,11 +202,6 @@ export function AuthProvider({ children }) {
         return { success: false, message: msg };
       }
 
-      const userProfile = await fetchUserProfile(data.user);
-      persistUser(userProfile);
-      return { success: true, user: userProfile };
-    } catch (err) {
-      const msg = err.message || 'Invalid login credentials';
       if (cleanEmail.includes('admin')) {
         return await loginDemoAdmin();
       }
@@ -296,7 +248,6 @@ export function AuthProvider({ children }) {
       role: 'user',
       createdAt: new Date().toISOString(),
     };
-    persistUser(demoUserObj);
     try {
       localStorage.setItem('revora_demo_user', JSON.stringify(demoUserObj));
     } catch (_) {}
@@ -312,9 +263,8 @@ export function AuthProvider({ children }) {
     } catch (err) {
       console.warn('Sign out error:', err);
     } finally {
-      persistUser(null);
+      setUser(null);
       setSession(null);
-      localStorage.removeItem('revora_current_view');
     }
   };
 

@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
+<<<<<<< HEAD
 import AttendeePicker from '../components/AttendeePicker';
 import MeetingCalendar from '../components/MeetingCalendar';
+=======
+>>>>>>> main
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import AdminMeetingsPanel from '../components/AdminMeetingsPanel';
 import { 
@@ -18,19 +21,8 @@ export default function AdminDashboard({ onNavigateHome }) {
   const { user, logout, loading } = useAuth();
   const navigate = useNavigate();
   const [usersList, setUsersList] = useState([]);
-  const [meetingsList, setMeetingsList] = useState([]);
-  const [briefingsList, setBriefingsList] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
-  const [selectedMeeting, setSelectedMeeting] = useState(null);
-
-  // Meeting Creation Modal States
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [meetingTitle, setMeetingTitle] = useState('');
-  const [recipientEmail, setRecipientEmail] = useState('');
-  const [meetingDetails, setMeetingDetails] = useState('');
-  const [scheduledAt, setScheduledAt] = useState('');
-  const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [meetingsRefreshKey, setMeetingsRefreshKey] = useState(0);
 
   const handleSignOut = async () => {
@@ -73,89 +65,11 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
-  // Fetch meetings list from Supabase
-  const fetchMeetings = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('meetings')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (!error && data) {
-        setMeetingsList(data);
-      }
-    } catch (err) {
-      console.warn('Admin meetings query notice:', err);
-    }
-  };
-
-  // Fetch briefings list from backend
-  const fetchBriefings = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/briefings`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data) ? data : (data.briefings || []);
-        setBriefingsList(list);
-      }
-    } catch (err) {
-      console.warn('Admin briefings query notice:', err);
-    }
-  };
-
   useEffect(() => {
     if (user && user.role === 'admin') {
       fetchUsers();
-      fetchMeetings();
-      fetchBriefings();
     }
   }, [user]);
-
-  // Handle Create & Dispatch Scheduled Meeting Briefing
-  const handleCreateMeeting = async (e) => {
-    e.preventDefault();
-    if (!meetingTitle || !recipientEmail || !scheduledAt) {
-      alert('Please fill out the meeting title, attendee email, and scheduled date/time.');
-      return;
-    }
-
-    setCreatingMeeting(true);
-    setActionMessage(null);
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: meetingTitle,
-          recipientEmail: recipientEmail,
-          agenda: meetingDetails,
-          scheduledAt: scheduledAt,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        setActionMessage(`Meeting scheduled! Briefing generated and dispatched to ${recipientEmail}.`);
-        setMeetingTitle('');
-        setRecipientEmail('');
-        setMeetingDetails('');
-        setScheduledAt('');
-        setIsCreateModalOpen(false);
-        await fetchBriefings();
-        await fetchMeetings();
-        setTimeout(() => setActionMessage(null), 6000);
-      } else {
-        alert(data.error || 'Failed to schedule meeting.');
-      }
-    } catch (err) {
-      console.error('Error creating meeting:', err);
-      alert('Server connection error. Ensure node index.js is active on port 5001.');
-    } finally {
-      setCreatingMeeting(false);
-    }
-  };
 
   // Toggle user role in Supabase profiles
   const handleToggleRole = async (targetUserId, currentRole) => {
@@ -279,6 +193,7 @@ export default function AdminDashboard({ onNavigateHome }) {
           </div>
         </div>
 
+<<<<<<< HEAD
         {/* Schedule Button & Admin Session Badge */}
         <div className="flex items-center gap-3">
           <button
@@ -289,6 +204,10 @@ export default function AdminDashboard({ onNavigateHome }) {
             <span className="hidden sm:inline">Schedule Meeting</span>
           </button>
 
+=======
+        {/* Admin Session Badge */}
+        <div className="flex items-center gap-4">
+>>>>>>> main
           <div className="flex items-center gap-3 px-3.5 py-1.5 rounded-xl bg-slate-100/90 border border-slate-200/80">
             {user?.avatar ? (
               <img
@@ -338,6 +257,10 @@ export default function AdminDashboard({ onNavigateHome }) {
 
         {/* System Overview Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+<<<<<<< HEAD
+=======
+          
+>>>>>>> main
           {/* Card 1: Total Users */}
           <div className="p-5 rounded-[22px] bg-white border border-slate-200/80 shadow-xs hover:shadow-sm transition-all flex flex-col justify-between">
             <div className="flex items-center justify-between text-slate-500 text-xs font-mono font-semibold mb-2">
@@ -413,6 +336,7 @@ export default function AdminDashboard({ onNavigateHome }) {
         {/* Meeting Scheduling & AI Bot Deployment (admin-only capability) */}
         <MeetingBotDeployer onBotDeployed={handleBotDeployed} assignableUsers={usersList} />
 
+<<<<<<< HEAD
         {/* Interactive Meeting Calendar */}
         <MeetingCalendar
           meetings={meetingsList}
@@ -420,6 +344,8 @@ export default function AdminDashboard({ onNavigateHome }) {
           onSelectMeeting={(m) => setSelectedMeeting(m)}
         />
 
+=======
+>>>>>>> main
         {/* Meeting & Bot Monitor: status, transcripts, recordings, summaries */}
         <AdminMeetingsPanel refreshKey={meetingsRefreshKey} users={usersList} />
 
@@ -437,7 +363,7 @@ export default function AdminDashboard({ onNavigateHome }) {
             </div>
 
             <button
-              onClick={() => { fetchUsers(); fetchMeetings(); fetchBriefings(); }}
+              onClick={fetchUsers}
               disabled={loadingUsers}
               className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer w-fit"
             >
@@ -446,6 +372,7 @@ export default function AdminDashboard({ onNavigateHome }) {
             </button>
           </div>
 
+          {/* Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-sans">
               <thead>
@@ -502,7 +429,7 @@ export default function AdminDashboard({ onNavigateHome }) {
                         {u.role === 'admin' ? 'Demote to User' : 'Promote to Admin'}
                       </button>
 
-                      {u.id !== user?.id && (
+                      {u.id !== user.id && (
                         <button
                           onClick={() => handleDeleteUser(u.id)}
                           className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200/60 cursor-pointer transition-colors inline-flex items-center justify-center align-middle"
@@ -518,181 +445,6 @@ export default function AdminDashboard({ onNavigateHome }) {
             </table>
           </div>
         </div>
-
-        {/* Schedule Meeting Modal (Clean White Theme) */}
-        {isCreateModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-            <div className="bg-white rounded-[28px] max-w-[560px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[90vh] overflow-y-auto text-black">
-              <div className="flex items-center justify-between pb-3 border-b border-black/5">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-sky-100 text-[#0084FF] flex items-center justify-center">
-                    <PlusCircle className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-outfit font-bold text-lg text-black">Schedule New Meeting</h3>
-                    <p className="text-xs text-black/50">Auto-generate and email an AI briefing to attendees</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="p-1.5 rounded-xl hover:bg-black/5 text-black/60 hover:text-black transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <form onSubmit={handleCreateMeeting} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1">
-                    Meeting Title <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Q4 Strategy Sync & Product Architecture"
-                    value={meetingTitle}
-                    onChange={(e) => setMeetingTitle(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black placeholder:text-black/40"
-                  />
-                </div>
-
-                {/* Attendee Directory Multi-Select Picker */}
-                <div>
-                  <AttendeePicker
-                    selectedEmails={recipientEmail}
-                    onChange={(emails) => setRecipientEmail(emails)}
-                    isDark={false}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-[#0084FF]" />
-                    <span>Scheduled Date & Time <span className="text-red-500">*</span></span>
-                  </label>
-                  <input
-                    type="datetime-local"
-                    required
-                    value={scheduledAt}
-                    onChange={(e) => setScheduledAt(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
-                    <AlignLeft className="w-3.5 h-3.5 text-[#0084FF]" />
-                    <span>Meeting Context & Agenda (Optional)</span>
-                  </label>
-                  <textarea
-                    rows={3}
-                    placeholder="Briefly outline topics to cover, goals, or prerequisites for the Gemini AI brief..."
-                    value={meetingDetails}
-                    onChange={(e) => setMeetingDetails(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black placeholder:text-black/40 resize-none"
-                  />
-                </div>
-
-                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-black/5">
-                  <button
-                    type="button"
-                    onClick={() => setIsCreateModalOpen(false)}
-                    className="px-4 py-2.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={creatingMeeting}
-                    className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs shadow-md transition-all hover:scale-102 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  >
-                    {creatingMeeting ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Dispatching AI Brief...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-3.5 h-3.5" />
-                        <span>Schedule & Auto-Dispatch</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Selected Meeting Details Modal */}
-        {selectedMeeting && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-            <div className="bg-white rounded-[28px] max-w-[640px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[85vh] overflow-y-auto">
-              <div className="flex items-center justify-between pb-4 border-b border-black/5">
-                <div>
-                  <h3 className="font-outfit font-bold text-xl text-black">
-                    {selectedMeeting.title || 'Meeting Summary & AI Insights'}
-                  </h3>
-                  <p className="text-xs text-black/50 font-mono mt-0.5">
-                    {selectedMeeting.bot_id ? `Bot ID: ${selectedMeeting.bot_id} • ` : ''}
-                    {selectedMeeting.meeting_url || selectedMeeting.recipient_email || 'Event Details'}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setSelectedMeeting(null)}
-                  className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
-
-              {selectedMeeting.summary && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Executive Summary</h4>
-                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
-                    {selectedMeeting.summary}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.agenda && !selectedMeeting.summary && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Meeting Agenda</h4>
-                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
-                    {selectedMeeting.agenda}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.transcript && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
-                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto">
-                    {selectedMeeting.transcript}
-                  </div>
-                </div>
-              )}
-
-              {Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Assigned Action Items</h4>
-                  <div className="space-y-2">
-                    {selectedMeeting.action_items.map((item, idx) => (
-                      <div key={idx} className="p-3 rounded-xl bg-purple-50 border border-purple-100 text-xs text-purple-900 font-medium flex items-center justify-between">
-                        <span>{typeof item === 'string' ? item : item.task || JSON.stringify(item)}</span>
-                        {item.assignee && (
-                          <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-700 font-bold text-[10px]">
-                            {item.assignee}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
       </main>
     </div>

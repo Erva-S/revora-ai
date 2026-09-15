@@ -13,8 +13,12 @@ import {
   Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
   Layers, Search, AlertCircle, Video, ExternalLink,
+<<<<<<< HEAD
   LayoutDashboard, Settings, User as UserIcon,
   Key, LogIn
+=======
+  LayoutDashboard, Settings, User as UserIcon, LogIn
+>>>>>>> main
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -47,6 +51,17 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
   const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
   const [archiveSearch, setArchiveSearch] = useState('');
 
+  // Derive active tab from location pathname or defaultTab prop
+  const currentPath = location.pathname;
+  let activeTab = 'overview';
+  if (currentPath.startsWith('/meetings') || defaultTab === 'meetings') {
+    activeTab = 'meetings';
+  } else if (currentPath.startsWith('/settings') || defaultTab === 'settings') {
+    activeTab = 'settings';
+  } else if (currentPath.startsWith('/profile') || defaultTab === 'profile') {
+    activeTab = 'profile';
+  }
+
   // Fetch AI Briefings from backend
   const fetchBriefings = async () => {
     try {
@@ -60,18 +75,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
       console.warn('Briefings query notice:', err);
     }
   };
-
-  // Fetch meetings from Supabase
-  // Derive active tab from location pathname or defaultTab prop
-  const currentPath = location.pathname;
-  let activeTab = 'overview';
-  if (currentPath.startsWith('/meetings') || defaultTab === 'meetings') {
-    activeTab = 'meetings';
-  } else if (currentPath.startsWith('/settings') || defaultTab === 'settings') {
-    activeTab = 'settings';
-  } else if (currentPath.startsWith('/profile') || defaultTab === 'profile') {
-    activeTab = 'profile';
-  }
 
   // Fetch real meetings from Supabase Postgres database
   const fetchMeetings = async () => {
@@ -172,6 +175,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     (b.title || '').toLowerCase().includes(archiveSearch.toLowerCase()) ||
     (b.agenda || '').toLowerCase().includes(archiveSearch.toLowerCase())
   );
+
   const handleSignOut = async () => {
     await logout();
     navigate('/', { replace: true });
@@ -204,7 +208,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 font-sans">
-      {/* Top Navigation Bar with Single Primary Action Button */}
+      {/* Top Navigation Bar with Primary Action Buttons */}
       <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-black/5 px-6 py-3.5 flex items-center justify-between shadow-xs">
         <div className="flex items-center gap-4">
           <button
@@ -230,7 +234,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           </div>
         </div>
 
-        {/* Primary Schedule Button, User Badge & Logout */}
+        {/* Primary Schedule Button & User Profile Badge */}
         <div className="flex items-center gap-3">
           <button
             onClick={() => setIsCreateModalOpen(true)}
@@ -356,10 +360,17 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               <div className="relative z-10 flex items-center gap-3">
                 <button
                   onClick={handleLaunchAssistant}
+<<<<<<< HEAD
                   className="px-6 py-3 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer flex items-center gap-2"
                 >
                   <Sparkles className="w-4 h-4 text-[#0084FF]" />
                   <span>Launch Assistant</span>
+=======
+                  className="px-6 py-3.5 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer shrink-0 flex items-center gap-2"
+                >
+                  <Sparkles className="w-4 h-4 text-[#0084FF]" />
+                  <span>Launch Revora Assistant</span>
+>>>>>>> main
                 </button>
               </div>
 

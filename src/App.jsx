@@ -95,6 +95,7 @@ function LandingPage({ isLoginRoute = false }) {
         onOpenGetStartedModal={() => setIsGetStartedModalOpen(true)}
         onOpenCompanyModal={() => setIsCompanyModalOpen(true)}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
+        onNavigateDashboard={handleNavigateDashboard}
       />
 
       {/* Main Content */}
@@ -158,7 +159,6 @@ function LandingPage({ isLoginRoute = false }) {
         onClose={() => setIsDemoModalOpen(false)}
       />
 
-      {/* MODAL 6: Unified Login Modal */}
       {/* MODAL 6: Authentication Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}

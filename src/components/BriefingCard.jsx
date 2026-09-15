@@ -104,9 +104,15 @@ const BriefingCard = ({ briefing: initialBriefing }) => {
           </div>
         </div>
 
+<<<<<<< HEAD
         <span className="px-3 py-1 rounded-full text-xs font-bold border border-emerald-200 bg-emerald-50 text-emerald-700 flex items-center gap-1">
           <CheckCircle2 className="w-3.5 h-3.5" />
           {briefing.status}
+=======
+        <span className="px-3 py-1 rounded-full text-xs font-bold bg-sky-50 text-[#0084FF] border border-sky-100 flex items-center gap-1 capitalize">
+          <CheckCircle2 className="w-3.5 h-3.5" />
+          Status: {briefing.status}
+>>>>>>> main
         </span>
       </div>
 
@@ -119,6 +125,7 @@ const BriefingCard = ({ briefing: initialBriefing }) => {
           </div>
         </div>
 
+<<<<<<< HEAD
         {briefing.keyTopics && briefing.keyTopics.length > 0 && (
           <div>
             <h4 className="text-xs font-bold text-black uppercase tracking-wider mb-2">
@@ -136,6 +143,23 @@ const BriefingCard = ({ briefing: initialBriefing }) => {
             </div>
           </div>
         )}
+=======
+        <div>
+          <h4 className="text-xs font-bold text-black uppercase tracking-wider mb-2">
+            Key Topics & Action Items
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {briefing.keyTopics?.map((topic, index) => (
+              <span
+                key={index}
+                className="px-3 py-1 rounded-lg bg-neutral-100 text-black/80 font-medium text-xs border border-black/5"
+              >
+                • {typeof topic === 'string' ? topic : topic.task || JSON.stringify(topic)}
+              </span>
+            ))}
+          </div>
+        </div>
+>>>>>>> main
       </div>
     </div>
   );

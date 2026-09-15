@@ -281,10 +281,33 @@ serve(async (req: Request): Promise<Response> => {
       if (cleanKey && !cleanKey.includes('your_meetingbaas')) {
         const headers = { 'x-meeting-baas-api-key': cleanKey };
         // v2: ask the bot to leave. (v1 used DELETE /bots/{id}; v2 exposes an
-        // explicit leave action.) Best effort — a bot that already left is fine.
-        try {
-          await fetch(`${meetingBaasBaseUrl()}/v2/bots/${botId}/leave`, { method: 'POST', headers });
-        } catch (_) {}
+        // explicit leave action.) This is idempotent by construction: a bot that
+        // already left is answered with 404/409, which is not a failure.
+        const leaveUrl = `${meetingBaasBaseUrl()}/v2/bots/${botId}/leave`;
+        // At most one retry, and only for a server/network problem.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const leaveResp = await fetch(leaveUrl, { method: 'POST', headers });
+            if (leaveResp.ok) {
+              console.log(`[MeetingBaaS] Bot leave accepted for bot_id=${botId}.`);
+              break;
+            }
+            const detail = readResponseError(leaveResp.status, await leaveResp.text());
+            if (leaveResp.status === 404 || leaveResp.status === 409) {
+              console.warn(
+                `[MeetingBaaS] Bot ${botId} was not in an active call (HTTP ${leaveResp.status}) - nothing to leave.`
+              );
+              break;
+            }
+            console.error(`[MeetingBaaS] Bot leave failed (attempt ${attempt}/2): ${detail}`);
+            if (leaveResp.status < 500) break;
+          } catch (leaveErr: any) {
+            console.error(
+              `[MeetingBaaS] Bot leave request error (attempt ${attempt}/2):`,
+              leaveErr?.message || String(leaveErr)
+            );
+          }
+        }
       }
 
       if (SUPABASE_URL && SERVICE_ROLE_KEY) {
@@ -343,24 +366,63 @@ serve(async (req: Request): Promise<Response> => {
     const sttProvider = transcriptionProvider();
     const botImageUrl = Deno.env.get('BOT_IMAGE_URL')?.trim() || undefined;
 
-    const clampTimeout = (name: string, fallback: number): number => {
-      const n = Number(Deno.env.get(name));
-      return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+    // MeetingBaaS v2 validates timeout_config and rejects the WHOLE create
+    // request with HTTP 400 (FST_ERR_VALIDATION, e.g. "Too small: expected
+    // number to be >=300" for silence_timeout) when a value is out of range.
+    // An out-of-range value therefore does not make the bot leave earlier: it
+    // throws away the auto-leave configuration and MeetingBaaS silently keeps
+    // its 600s defaults. Clamp every value into the documented range so the
+    // auto-leave conditions are always actually in force.
+    const clampTimeout = (name: string, fallback: number, min: number, max: number): number => {
+      const configured = Number(Deno.env.get(name));
+      const value = Number.isFinite(configured) && configured > 0 ? Math.round(configured) : fallback;
+      if (value < min || value > max) {
+        console.warn(
+          `[Deploy-Bot] ${name}=${value}s is outside MeetingBaaS's allowed ${min}-${max}s range - using the nearest valid value.`
+        );
+      }
+      return Math.min(Math.max(value, min), max);
     };
 
-    const waitingRoomTimeout = clampTimeout('BOT_WAITING_ROOM_TIMEOUT', 300);
-    const noOneJoinedTimeout = clampTimeout('BOT_NO_ONE_JOINED_TIMEOUT', 120);
-    const silenceTimeout = clampTimeout('BOT_SILENCE_TIMEOUT', 30);
+    const waitingRoomTimeout = clampTimeout('BOT_WAITING_ROOM_TIMEOUT', 300, 120, 1800);
+    const noOneJoinedTimeout = clampTimeout('BOT_NO_ONE_JOINED_TIMEOUT', 120, 120, 1800);
+    // No-audio fallback exit. 300s is the lowest value MeetingBaaS accepts, and
+    // it bounds how long an emptied meeting can hold the bot in the call when
+    // the roster-based "everyone else has left" exit cannot engage (MeetingBaaS
+    // disables that check for the first 5 minutes of recording and needs a
+    // healthy speaker observer).
+    const silenceTimeout = clampTimeout('BOT_SILENCE_TIMEOUT', 300, 300, 3600);
+
+    // Names MeetingBaaS must not count when it evaluates its "have the human
+    // participants left?" auto-leave condition. Only OTHER bots belong here:
+    // the bot itself is expected to be counted (the engine treats "one or fewer
+    // non-ignored attendees" as alone), so including our own bot_name would
+    // make a single remaining human look like nobody and eject the bot early.
+    // Comma-separated list, e.g. "Sandbox Bot, Staging Bot".
+    const ignoredParticipantNames = (Deno.env.get('BOT_IGNORED_PARTICIPANT_NAMES') || '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
+
+    console.log(
+      `[Deploy-Bot] Auto-leave config: waiting_room_timeout=${waitingRoomTimeout}s ` +
+        `no_one_joined_timeout=${noOneJoinedTimeout}s silence_timeout=${silenceTimeout}s ` +
+        `ignored_participant_names=${ignoredParticipantNames.length ? ignoredParticipantNames.join(', ') : '(none)'}`
+    );
 
     // Hybrid dual-compatible payload containing both v1 and v2 property specifications.
     // v1 properties: webhook_url, speech_to_text, automatic_leave
-    // v2 properties: callback_enabled/config, transcription_enabled/config, timeout_config
+    // v2 properties: callback_enabled/config, transcription_enabled/config,
+    //                timeout_config, ignored_participant_names
+    // v2 ignores unknown keys, so the v1 block is harmless - but only the v2
+    // shape actually configures auto-leave.
     const baasPayload = {
       meeting_url: meetingUrl,
       bot_name: botName,
       recording_mode: 'speaker_view',
       entry_message: entryMessage,
       ...(botImageUrl ? { bot_image: botImageUrl } : {}),
+      ...(ignoredParticipantNames.length ? { ignored_participant_names: ignoredParticipantNames } : {}),
 
       // v1 specification
       webhook_url: webhookUrl,

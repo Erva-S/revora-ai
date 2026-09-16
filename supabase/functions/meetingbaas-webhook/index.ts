@@ -909,6 +909,111 @@ function isMeetingEndedCode(code: string): boolean {
   return MEETING_ENDED_CODES.includes(c) || c.includes('ended') || c.includes('left');
 }
 
+function meetingBaasBaseUrl(): string {
+  const raw = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || 'https://api.meetingbaas.com').trim();
+  return raw.replace(/\/+$/, '').replace(/\/v[12]$/i, '');
+}
+
+/**
+ * Commands MeetingBaaS to immediately eject the bot from the meeting.
+ * Idempotent: 404 and 409 are treated as successful departures.
+ */
+async function triggerBotLeaveIfActive(botId: string): Promise<boolean> {
+  const cleanKey = (Deno.env.get('MEETINGBAAS_API_KEY') || '').trim();
+  if (!cleanKey || cleanKey.includes('your_meetingbaas')) {
+    console.warn(`[MeetingBaaS] Cannot trigger bot leave: MEETINGBAAS_API_KEY not configured.`);
+    return false;
+  }
+
+  const baseUrl = meetingBaasBaseUrl();
+  const headers = {
+    'x-meeting-baas-api-key': cleanKey,
+    'Content-Type': 'application/json',
+  };
+
+  const endpoints = [
+    { url: `${baseUrl}/v2/bots/${botId}/leave`, method: 'POST' },
+    { url: `${baseUrl}/bots/${botId}`, method: 'DELETE' },
+  ];
+
+  for (const target of endpoints) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await fetch(target.url, { method: target.method, headers });
+        if (res.ok) {
+          return true;
+        }
+        // If 404 or 409, the bot is not in an active call (already left)
+        if (res.status === 404 || res.status === 409) {
+          return true;
+        }
+        const text = await res.text();
+        console.warn(`[MeetingBaaS] Leave request (${target.url}) returned HTTP ${res.status}: ${text}`);
+        if (res.status < 500) break;
+      } catch (err: any) {
+        console.error(`[MeetingBaaS] Leave request error (${target.url}, attempt ${attempt}/2):`, err?.message || String(err));
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Evaluates active participants, filtering out the bot's own identity and any
+ * configured bot names so only true human participants are counted.
+ */
+function evaluateHumanParticipants(
+  rawParticipants: any[],
+  botName: string,
+  extraIgnored: string[] = []
+): { humanCount: number; humans: string[]; bots: string[] } {
+  const norm = (s: unknown) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const botNorm = norm(botName);
+
+  const ignoredSet = new Set(
+    [
+      botName,
+      `${botName} (You)`,
+      `${botName} (Guest)`,
+      'Revora Assistant',
+      'Revora Assistant (You)',
+      'Revora Assistant (Guest)',
+      'AI Meeting Assistant',
+      'AI Meeting Assistant (You)',
+      'AI Meeting Assistant (Guest)',
+      ...extraIgnored,
+    ]
+      .map(norm)
+      .filter(Boolean)
+  );
+
+  const humans: string[] = [];
+  const bots: string[] = [];
+
+  for (const p of rawParticipants) {
+    if (!p) continue;
+    const name = typeof p === 'string' ? p : p.display_name || p.name || '';
+    const n = norm(name);
+    if (!n) continue;
+
+    const isBot =
+      (typeof p === 'object' && p !== null && (p.is_bot === true || p.isBot === true)) ||
+      n === botNorm ||
+      n === norm(`${botName}you`) ||
+      n === norm(`${botName}guest`) ||
+      n === 'you' ||
+      ignoredSet.has(n);
+
+    if (isBot) {
+      bots.push(name);
+    } else {
+      humans.push(name);
+    }
+  }
+
+  return { humanCount: humans.length, humans, bots };
+}
+
 function mapStatusChangeToStatus(
   body: Record<string, any>,
 ): { status: 'pending' | 'recording' | 'failed'; processing_stage: Stage; error_message?: string; ended_at?: string } | null {
@@ -965,6 +1070,8 @@ serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
+  const t0 = Date.now();
+
   let body: Record<string, any> = {};
   try {
     body = await req.json();
@@ -989,7 +1096,7 @@ serve(async (req: Request): Promise<Response> => {
   const data = body?.data ?? body;
   const botId = String(body?.bot_id || data?.bot_id || body?.bot?.id || body?.id || '').trim();
 
-  console.log(`[Webhook] event=${eventType} bot_id=${botId || '<none>'}`);
+  console.log(`[Webhook] T+0ms event=${eventType} bot_id=${botId || '<none>'}`);
 
   if (!botId) {
     console.warn('[Webhook] payload missing bot_id — cannot correlate to a meeting');
@@ -1044,6 +1151,67 @@ serve(async (req: Request): Promise<Response> => {
       return json({ success: true, event: eventType, bot_id: botId, status: 'failed' }, 200);
     }
 
+    // 1. Participant event / roster analysis
+    const rawParticipants =
+      data?.participants ||
+      body?.participants ||
+      data?.attendees ||
+      body?.attendees ||
+      null;
+
+    const botName = Deno.env.get('BOT_NAME')?.trim() || 'Revora Assistant';
+    const envIgnored = (Deno.env.get('BOT_IGNORED_PARTICIPANT_NAMES') || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let detectedZeroHumans = false;
+
+    if (Array.isArray(rawParticipants)) {
+      console.log(`[MeetingBaaS] Participant event received`);
+      const { humanCount } = evaluateHumanParticipants(rawParticipants, botName, envIgnored);
+      console.log(`[MeetingBaaS] Active human participants: ${humanCount}`);
+
+      if (humanCount > 0) {
+        console.log(`[MeetingBaaS] Human participants remain — keeping bot`);
+      } else {
+        console.log(`[MeetingBaaS] No human participants remain`);
+        detectedZeroHumans = true;
+      }
+    }
+
+    // 2. Check for meeting end status codes (all_participants_left, no_attendees, call_ended, etc.)
+    const rawCode = statusCodeFrom(body);
+    const normalized = normalizeCode(rawCode);
+    const isEndedEvent =
+      isMeetingEndedCode(rawCode) ||
+      isMeetingEndedCode(normalized) ||
+      eventType.includes('ended') ||
+      eventType.includes('leave') ||
+      eventType === 'participant.left';
+
+    // 3. If zero human participants remain or an end event was emitted, ensure bot is instructed to leave
+    //    The leave call is fire-and-forget so the DB update (and thus the
+    //    dashboard Realtime notification) is not blocked by API round-trips.
+    if (detectedZeroHumans || isEndedEvent) {
+      if (!detectedZeroHumans && !Array.isArray(rawParticipants)) {
+        console.log(`[MeetingBaaS] Participant event received`);
+        console.log(`[MeetingBaaS] Active human participants: 0`);
+        console.log(`[MeetingBaaS] No human participants remain`);
+      }
+
+      if (existing?.status !== 'summarized' && existing?.status !== 'completed') {
+        console.log(`[MeetingBaaS] T+${Date.now() - t0}ms Initiating bot leave (non-blocking)`);
+        // Fire-and-forget: don't await. The leave command is a defensive
+        // confirmation — MeetingBaaS already knows the meeting ended.
+        triggerBotLeaveIfActive(botId).then((ok) => {
+          if (ok) console.log(`[MeetingBaaS] Bot leave successful`);
+        }).catch((err) => {
+          console.warn(`[MeetingBaaS] Bot leave background error:`, err?.message || String(err));
+        });
+      }
+    }
+
     const mapped = mapStatusChangeToStatus(body);
     if (mapped && existing?.status !== 'summarized') {
       if (mapped.processing_stage === 'meeting_ended') {
@@ -1053,7 +1221,8 @@ serve(async (req: Request): Promise<Response> => {
             (endedCode === 'all_participants_left' ? ' - no human participants remained.' : '')
         );
       }
-      await updateMeetingByBotId(supabaseAdmin, botId, { ...mapped, raw_payload: body });
+      await updateMeetingByBotId(supabaseAdmin, botId, { ...mapped, raw_payload: body }, true);
+      console.log(`[Webhook] T+${Date.now() - t0}ms DB updated (status=${mapped.status}, stage=${mapped.processing_stage})`);
       return json({ success: true, event: eventType, bot_id: botId, status: mapped.status, stage: mapped.processing_stage }, 200);
     }
     return json({ success: true, event: eventType, bot_id: botId, status: existing?.status ?? 'unchanged' }, 200);
@@ -1067,27 +1236,55 @@ serve(async (req: Request): Promise<Response> => {
 // retry without them rather than losing the whole transcript write.
 const OPTIONAL_COLUMNS = ['processing_stage', 'transcript_segments'];
 
-async function updateMeetingByBotId(supabaseAdmin: any, botId: string, patch: Record<string, any>): Promise<any | null> {
-  const { data: existing } = await supabaseAdmin
-    .from('meetings')
-    .select('id, transcript, status, summary')
-    .eq('bot_id', botId)
-    .maybeSingle();
+/**
+ * @param skipTranscriptGuard  When true, skip the pre-read SELECT that checks
+ *   transcript length. Status-only updates (bot.status_change) don't touch the
+ *   transcript column and don't need the extra round-trip — saving ~0.5-1s.
+ */
+async function updateMeetingByBotId(
+  supabaseAdmin: any,
+  botId: string,
+  patch: Record<string, any>,
+  skipTranscriptGuard = false,
+): Promise<any | null> {
+  let existing: Record<string, any> | null = null;
 
-  // Never let a shorter re-delivery clobber a longer transcript we already have.
-  if (existing && patch.transcript !== undefined && existing.transcript) {
-    const existingText = String(existing.transcript).trim();
-    const newText = String(patch.transcript || '').trim();
-    if (newText.length < existingText.length) {
-      console.log(`[Webhook] Preserving existing longer transcript (${existingText.length} chars vs ${newText.length} chars)`);
-      patch.transcript = existing.transcript;
+  if (!skipTranscriptGuard) {
+    const { data } = await supabaseAdmin
+      .from('meetings')
+      .select('id, transcript, status, summary')
+      .eq('bot_id', botId)
+      .maybeSingle();
+    existing = data;
+
+    // Never let a shorter re-delivery clobber a longer transcript we already have.
+    if (existing && patch.transcript !== undefined && existing.transcript) {
+      const existingText = String(existing.transcript).trim();
+      const newText = String(patch.transcript || '').trim();
+      if (newText.length < existingText.length) {
+        console.log(`[Webhook] Preserving existing longer transcript (${existingText.length} chars vs ${newText.length} chars)`);
+        patch.transcript = existing.transcript;
+      }
     }
   }
 
-  const write = async (p: Record<string, any>) =>
-    existing
-      ? await supabaseAdmin.from('meetings').update(p).eq('bot_id', botId).select().maybeSingle()
-      : await supabaseAdmin.from('meetings').insert({ bot_id: botId, ...p }).select().maybeSingle();
+  // Try update first (the common path); fall back to insert if no row matched.
+  const write = async (p: Record<string, any>) => {
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from('meetings')
+      .update(p)
+      .eq('bot_id', botId)
+      .select()
+      .maybeSingle();
+    if (updated) return { data: updated, error: null };
+    if (updateErr && updateErr.code !== 'PGRST116') return { data: null, error: updateErr };
+    // No row matched — insert instead.
+    return await supabaseAdmin
+      .from('meetings')
+      .insert({ bot_id: botId, ...p })
+      .select()
+      .maybeSingle();
+  };
 
   let { data: saved, error } = await write(patch);
 

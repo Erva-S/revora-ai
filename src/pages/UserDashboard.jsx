@@ -13,12 +13,7 @@ import {
   Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
   Layers, Search, AlertCircle, Video, ExternalLink,
-<<<<<<< HEAD
-  LayoutDashboard, Settings, User as UserIcon,
-  Key, LogIn
-=======
   LayoutDashboard, Settings, User as UserIcon, LogIn
->>>>>>> main
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -360,17 +355,10 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               <div className="relative z-10 flex items-center gap-3">
                 <button
                   onClick={handleLaunchAssistant}
-<<<<<<< HEAD
-                  className="px-6 py-3 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4 text-[#0084FF]" />
-                  <span>Launch Assistant</span>
-=======
                   className="px-6 py-3.5 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer shrink-0 flex items-center gap-2"
                 >
                   <Sparkles className="w-4 h-4 text-[#0084FF]" />
                   <span>Launch Revora Assistant</span>
->>>>>>> main
                 </button>
               </div>
 

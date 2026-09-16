@@ -38,6 +38,15 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
       if (queryError) throw queryError;
       setMeetings(data || []);
       setError(null);
+
+      // Keep the detail modal in sync: if a meeting is currently selected,
+      // refresh it from the latest data so the user sees live status updates
+      // without closing and re-opening the modal.
+      setSelected((prev) => {
+        if (!prev || !data) return prev;
+        const updated = data.find((m) => m.id === prev.id);
+        return updated || prev;
+      });
     } catch (err) {
       console.error('Admin meetings query failed:', err);
       setError(err.message || 'Failed to load meetings.');

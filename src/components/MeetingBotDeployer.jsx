@@ -46,12 +46,33 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
       }
     };
 
+    // Initial fetch
     syncBotState();
-    const intervalId = setInterval(syncBotState, 5000);
+
+    // Primary: Supabase Realtime — fires within ~1s of a DB change.
+    let channel = null;
+    try {
+      channel = supabase
+        .channel(`deployer_bot_${botStatus.botId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'meetings', filter: `bot_id=eq.${botStatus.botId}` },
+          () => { if (!cancelled) syncBotState(); }
+        )
+        .subscribe();
+    } catch (realtimeErr) {
+      console.warn('MeetingBotDeployer realtime subscription notice:', realtimeErr);
+    }
+
+    // Fallback: relaxed 15s poll in case Realtime channel drops.
+    const intervalId = setInterval(syncBotState, 15000);
 
     return () => {
       cancelled = true;
       clearInterval(intervalId);
+      if (channel) {
+        try { supabase.removeChannel(channel); } catch (_) {}
+      }
     };
   }, [botStatus?.botId]);
 

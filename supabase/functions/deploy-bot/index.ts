@@ -393,29 +393,40 @@ serve(async (req: Request): Promise<Response> => {
     // healthy speaker observer).
     const silenceTimeout = clampTimeout('BOT_SILENCE_TIMEOUT', 300, 300, 3600);
 
-    // Names MeetingBaaS must not count when it evaluates its "have the human
-    // participants left?" auto-leave condition. Only OTHER bots belong here:
-    // the bot itself is expected to be counted (the engine treats "one or fewer
-    // non-ignored attendees" as alone), so including our own bot_name would
-    // make a single remaining human look like nobody and eject the bot early.
-    // Comma-separated list, e.g. "Sandbox Bot, Staging Bot".
-    const ignoredParticipantNames = (Deno.env.get('BOT_IGNORED_PARTICIPANT_NAMES') || '')
+    // In Google Meet and Teams, the participant roster displays the bot under its bot_name
+    // and frequently appends local indicators such as " (You)" or " (Guest)".
+    // MeetingBaaS evaluates its "all human participants have left" auto-leave condition
+    // by filtering out any attendees matching ignored_participant_names.
+    // By ensuring the bot's own identity and common platform variations are always ignored,
+    // MeetingBaaS accurately drops to 0 non-ignored participants the moment the last human leaves,
+    // triggering automatic departure without lingering.
+    const baseBotNames = [
+      botName,
+      `${botName} (You)`,
+      `${botName} (Guest)`,
+      'Revora Assistant',
+      'Revora Assistant (You)',
+      'Revora Assistant (Guest)',
+      'AI Meeting Assistant',
+      'AI Meeting Assistant (You)',
+      'AI Meeting Assistant (Guest)',
+    ];
+    const envIgnored = (Deno.env.get('BOT_IGNORED_PARTICIPANT_NAMES') || '')
       .split(',')
       .map((name) => name.trim())
       .filter(Boolean);
+    const ignoredParticipantNames = [...new Set([...baseBotNames, ...envIgnored])];
 
     console.log(
       `[Deploy-Bot] Auto-leave config: waiting_room_timeout=${waitingRoomTimeout}s ` +
         `no_one_joined_timeout=${noOneJoinedTimeout}s silence_timeout=${silenceTimeout}s ` +
-        `ignored_participant_names=${ignoredParticipantNames.length ? ignoredParticipantNames.join(', ') : '(none)'}`
+        `ignored_participant_names=${ignoredParticipantNames.join(', ')}`
     );
 
     // Hybrid dual-compatible payload containing both v1 and v2 property specifications.
-    // v1 properties: webhook_url, speech_to_text, automatic_leave
+    // v1 properties: webhook_url, speech_to_text, automatic_leave (uses noone_joined_timeout)
     // v2 properties: callback_enabled/config, transcription_enabled/config,
-    //                timeout_config, ignored_participant_names
-    // v2 ignores unknown keys, so the v1 block is harmless - but only the v2
-    // shape actually configures auto-leave.
+    //                timeout_config (uses no_one_joined_timeout, grace_period), ignored_participant_names
     const baasPayload = {
       meeting_url: meetingUrl,
       bot_name: botName,
@@ -431,6 +442,7 @@ serve(async (req: Request): Promise<Response> => {
       },
       automatic_leave: {
         waiting_room_timeout: waitingRoomTimeout,
+        noone_joined_timeout: noOneJoinedTimeout,
         no_one_joined_timeout: noOneJoinedTimeout,
         silence_timeout: silenceTimeout,
       },
@@ -450,6 +462,7 @@ serve(async (req: Request): Promise<Response> => {
         waiting_room_timeout: waitingRoomTimeout,
         no_one_joined_timeout: noOneJoinedTimeout,
         silence_timeout: silenceTimeout,
+        grace_period: 0,
       },
     };
 

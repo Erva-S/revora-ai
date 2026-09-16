@@ -86,29 +86,29 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
   ).length;
 
   return (
-    <div className="p-6 sm:p-8 rounded-[28px] bg-white border border-slate-200/80 shadow-xs space-y-5 font-sans">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+    <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-4 font-sans">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
         <div>
-          <h3 className="font-outfit font-bold text-xl text-slate-900 flex items-center gap-2">
-            <Bot className="w-5 h-5 text-[#0084FF]" />
-            Meeting &amp; Bot Monitor
+          <h3 className="font-outfit font-bold text-base text-slate-900 flex items-center gap-2">
+            <Bot className="w-4 h-4 text-[#0084FF]" />
+            Meeting Monitor
           </h3>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Real-time bot status, transcripts, recordings, summaries, and action items for every meeting.
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            Bot status, transcripts, recordings, summaries, and action items.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          <span className="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200/80 text-[11px] font-mono font-bold text-slate-600">
-            {meetings.length} total • {activeCount} active
+        <div className="flex items-center gap-2">
+          <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200/80 text-[10px] font-mono font-semibold text-slate-600">
+            {meetings.length} total · {activeCount} active
           </span>
           <button
             onClick={fetchMeetings}
             disabled={loading}
-            className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer w-fit"
+            className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200/80 text-slate-500 transition-colors cursor-pointer"
+            title="Refresh meetings"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-[#0084FF]' : ''}`} />
-            <span>Refresh</span>
           </button>
         </div>
       </div>
@@ -125,7 +125,7 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
           meetings.map((m) => (
             <div
               key={m.id}
-              className="p-5 rounded-2xl bg-slate-50/70 border border-slate-200/80 hover:bg-sky-50/40 hover:border-sky-200/80 transition-all space-y-3"
+              className="p-4 rounded-xl bg-slate-50/70 border border-slate-200/80 hover:bg-sky-50/30 hover:border-sky-200/80 transition-all space-y-2"
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="space-y-1.5 min-w-0">
@@ -191,8 +191,8 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
       {/* Meeting Details Modal (Light Mode) */}
       {selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-          <div className="bg-white rounded-[28px] max-w-[680px] w-full p-6 space-y-5 border border-slate-200 shadow-2xl max-h-[85vh] overflow-y-auto">
-            <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-100">
+          <div className="bg-white rounded-2xl max-w-[680px] w-full p-5 space-y-4 border border-slate-200 shadow-2xl max-h-[85vh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-4 pb-3 border-b border-slate-100">
               <div className="min-w-0">
                 <h3 className="font-outfit font-bold text-xl text-slate-900 truncate">
                   {selected.title || 'Meeting Results'}

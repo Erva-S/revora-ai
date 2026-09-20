@@ -12,15 +12,12 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.112.0",
     "canvas-confetti": "^1.9.4",
-    "clsx": "^2.1.1",
     "framer-motion": "^12.43.0",
     "lucide-react": "^1.28.0",
-    "nodemailer": "^9.0.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.18.3",
-    "tailwind-merge": "^3.6.0"
+    "react-router-dom": "^7.18.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

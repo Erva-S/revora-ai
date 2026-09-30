@@ -189,19 +189,37 @@ function canonicalSpeaker(reg: ParticipantRegistry, raw: unknown): string | null
 // MeetingBaaS artifact fetching
 // --------------------------------------------------------------------
 
-/** Fetch a signed artifact URL. Returns null instead of throwing. */
+/** Fetch a signed artifact URL. Returns null instead of throwing.
+ *  Retries up to 2 more times with short backoff on network errors or HTTP 5xx.
+ *  Non-retryable failures (4xx) return null immediately. Total worst-case
+ *  added time: ~1.5s (500ms + 1000ms backoffs).
+ */
 async function fetchSignedText(url: string, label: string): Promise<string | null> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
+  const BACKOFFS = [0, 500, 1000]; // first attempt immediate, then 500ms, then 1000ms
+  for (let attempt = 0; attempt < BACKOFFS.length; attempt++) {
+    if (BACKOFFS[attempt] > 0) {
+      await new Promise((r) => setTimeout(r, BACKOFFS[attempt]));
+    }
+    try {
+      const res = await fetch(url);
+      if (res.ok) return await res.text();
+      // 5xx → retry if attempts remain; anything else → give up.
+      if (res.status >= 500 && attempt < BACKOFFS.length - 1) {
+        console.warn(`[Webhook] ${label} artifact fetch HTTP ${res.status} (attempt ${attempt + 1}/${BACKOFFS.length}) — retrying.`);
+        continue;
+      }
       console.error(`[Webhook] ${label} artifact fetch failed: HTTP ${res.status}`);
       return null;
+    } catch (err) {
+      if (attempt < BACKOFFS.length - 1) {
+        console.warn(`[Webhook] ${label} artifact fetch error (attempt ${attempt + 1}/${BACKOFFS.length}): ${scrub(err)} — retrying.`);
+        continue;
+      }
+      console.error(`[Webhook] ${label} artifact fetch error: ${scrub(err)}`);
+      return null;
     }
-    return await res.text();
-  } catch (err) {
-    console.error(`[Webhook] ${label} artifact fetch error: ${scrub(err)}`);
-    return null;
   }
+  return null;
 }
 
 /**
@@ -1213,7 +1231,13 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     const mapped = mapStatusChangeToStatus(body);
-    if (mapped && existing?.status !== 'summarized') {
+    // 5.3 — Ordering guard: a status_change must never move a meeting that is
+    // already 'completed' or 'summarized' back to an earlier stage, and must not
+    // overwrite its raw_payload. Failure events keep current behaviour (handled
+    // above). This prevents out-of-order webhook deliveries from regressing a
+    // finished meeting's status.
+    const isFinished = existing?.status === 'completed' || existing?.status === 'summarized';
+    if (mapped && !isFinished) {
       if (mapped.processing_stage === 'meeting_ended') {
         const endedCode = statusCodeFrom(body);
         console.log(
@@ -1225,6 +1249,9 @@ serve(async (req: Request): Promise<Response> => {
       console.log(`[Webhook] T+${Date.now() - t0}ms DB updated (status=${mapped.status}, stage=${mapped.processing_stage})`);
       return json({ success: true, event: eventType, bot_id: botId, status: mapped.status, stage: mapped.processing_stage }, 200);
     }
+    if (mapped && isFinished) {
+      console.log(`[Webhook] Ignoring status_change (${mapped.status}/${mapped.processing_stage}) — meeting already ${existing.status}.`);
+    }
     return json({ success: true, event: eventType, bot_id: botId, status: existing?.status ?? 'unchanged' }, 200);
   } catch (err) {
     console.error('[Webhook] processing error:', scrub(err));
@@ -1234,7 +1261,7 @@ serve(async (req: Request): Promise<Response> => {
 
 // Columns added by migration 0004. If the migration has not been applied yet we
 // retry without them rather than losing the whole transcript write.
-const OPTIONAL_COLUMNS = ['processing_stage', 'transcript_segments'];
+const OPTIONAL_COLUMNS = ['processing_stage', 'transcript_segments', 'transcription_provider', 'transcript_metrics'];
 
 /**
  * @param skipTranscriptGuard  When true, skip the pre-read SELECT that checks
@@ -1356,11 +1383,24 @@ async function handleCompletion(
 
   // STEP 8: the transcript is complete before anything is summarised, and it is
   // persisted first so a Gemini failure can never cost us the transcript.
+  // 5.2 — Observability: record which provider produced this transcript and
+  // the full pipeline statistics so provider bake-offs can be compared from
+  // the database without re-running meetings. transcription_provider comes
+  // from the env var (verified: bot.completed payload does not expose it).
+  const sttProvider = (Deno.env.get('SPEECH_TO_TEXT_PROVIDER') || '').trim().toLowerCase() || null;
+  const transcriptMetrics = {
+    ...assembled.stats,
+    sourceWordCount: assembled.sourceWordCount,
+    finalWordCount: countWords(assembled.turns.map((t) => t.text).join(' ')),
+  };
+
   const transcriptSaved = await updateMeetingByBotId(supabaseAdmin, botId, {
     status: 'completed',
     processing_stage: 'transcript_ready',
     transcript: assembled.text,
     transcript_segments: assembled.turns,
+    transcription_provider: sttProvider,
+    transcript_metrics: transcriptMetrics,
     recording_url: recordingUrl,
     duration_secs: durationSecs,
     ended_at: new Date().toISOString(),
@@ -1433,6 +1473,12 @@ async function replaceTranscriptRows(supabaseAdmin: any, meetingId: string | nul
 }
 
 async function persistAnalysis(supabaseAdmin: any, meetingId: string, analysis: AIAnalysis): Promise<void> {
+  // 5.4 — Idempotency: delete existing summaries before inserting, mirroring
+  // the pattern already used for action_items. Prevents duplicate rows on
+  // bot.completed re-delivery.
+  const { error: delSummaryError } = await supabaseAdmin.from('summaries').delete().eq('meeting_id', meetingId);
+  if (delSummaryError) console.error(`[Webhook] summaries cleanup failed (${delSummaryError.code}): ${delSummaryError.message}`);
+
   const { error: summaryError } = await supabaseAdmin.from('summaries').insert({
     meeting_id: meetingId,
     executive_summary: analysis.executive_summary,

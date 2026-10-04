@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import ActionItemCard from './ActionItemCard';
+import ContextBriefingSection from './ContextBriefingSection';
+import MeetingProjectAssignment from './MeetingProjectAssignment';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { Video, RefreshCw, Clock, ExternalLink, AlertCircle, Bot, Users } from 'lucide-react';
 
 /**
  * Admin-side meeting monitor.
  *
- * Read-only view over the meetings the admin is allowed to read (RLS grants
+ * Meeting monitor with additive project assignment (RLS grants
  * admins every row via public.is_admin()): bot id, pipeline status, and the
  * post-meeting results produced by the existing webhook + Gemini pipeline
  * (recording, summary, transcript, action items).
@@ -212,7 +214,13 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
               </button>
             </div>
 
-            {selected.recording_url && (
+             <MeetingProjectAssignment key={selected.id} meeting={selected} onAssigned={(updated) => {
+               setSelected(updated);
+               setMeetings((current) => current.map((m) => m.id === updated.id ? updated : m));
+             }} />
+             <ContextBriefingSection key={`${selected.id}:${selected.project_id || ''}`} meeting={selected} />
+
+             {selected.recording_url && (
               <a
                 href={selected.recording_url}
                 target="_blank"

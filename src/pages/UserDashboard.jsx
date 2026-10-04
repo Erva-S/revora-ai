@@ -3,6 +3,7 @@ import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
+import ContextBriefingSection from '../components/ContextBriefingSection';
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import TaskExtractorModal from '../components/TaskExtractorModal';
 import AttendeePicker from '../components/AttendeePicker';
@@ -859,6 +860,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   Close
                 </button>
               </div>
+
+              <ContextBriefingSection key={`${selectedMeeting.id}:${selectedMeeting.project_id || ''}`} meeting={selectedMeeting} />
 
               {selectedMeeting.recording_url && (
                 <a

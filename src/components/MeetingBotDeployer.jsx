@@ -6,10 +6,21 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
   const [meetingUrl, setMeetingUrl] = useState('');
   const [meetingTitle, setMeetingTitle] = useState('');
   const [assignToUserId, setAssignToUserId] = useState('');
+  const [projectId, setProjectId] = useState('');
+  const [projects, setProjects] = useState([]);
+  const [projectsAvailable, setProjectsAvailable] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [botStatus, setBotStatus] = useState(null); // null | { botId, status, meetingUrl, deployedAt }
   const [showDetails, setShowDetails] = useState(false);
+
+  const loadProjects = async () => {
+    try {
+      const { data, error: projectError } = await supabase.from('projects').select('id,name,clients(name)').order('name');
+      if (!projectError) { setProjects(data || []); setProjectsAvailable(true); }
+    } catch { /* Optional context deployment may not be installed yet. */ }
+  };
+  useEffect(() => { const timer = setTimeout(loadProjects, 0); return () => clearTimeout(timer); }, []);
 
   useEffect(() => {
     if (!botStatus?.botId) return undefined;
@@ -126,6 +137,7 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
           meetingUrl: meetingUrl.trim(),
           ...(meetingTitle.trim() ? { title: meetingTitle.trim() } : {}),
           ...(assignToUserId ? { assign_to_user_id: assignToUserId } : {}),
+          ...(projectId ? { project_id: projectId } : {}),
         },
       });
 
@@ -181,6 +193,7 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
     setBotStatus(null);
     setMeetingUrl('');
     setMeetingTitle('');
+    setProjectId('');
     setError(null);
     setShowDetails(false);
   };
@@ -279,6 +292,15 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
               </div>
             )}
           </div>
+
+          {projectsAvailable && <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+            Project <span className="font-normal text-slate-400 normal-case">(optional)</span>
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)} onFocus={loadProjects} disabled={loading}
+              className="mt-1.5 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-900 outline-none font-normal normal-case">
+              <option value="">No project</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.clients?.name} / {p.name}</option>)}
+            </select>
+          </label>}
 
           {error && (
             <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs font-medium flex items-center gap-2">

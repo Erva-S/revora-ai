@@ -357,6 +357,17 @@ serve(async (req: Request): Promise<Response> => {
     }
     const userId: string = owner.ownerId;
 
+    // Optional context assignment is verified before dispatching an external bot.
+    const projectId = String(payload.project_id ?? '').trim();
+    if (projectId) {
+      if (!UUID_PATTERN.test(projectId)) return json({ success: false, error: 'project_id must be a valid UUID' }, 400);
+      const projectClient = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+      const { data: project, error: projectError } = await projectClient.from('projects').select('id').eq('id', projectId).maybeSingle();
+      if (projectError || !project) return json({ success: false, error: 'Project unavailable. Apply the context migration and choose an existing project.' }, 400);
+      const { error: columnError } = await projectClient.from('meetings').select('project_id').limit(1);
+      if (columnError) return json({ success: false, error: 'Meeting project assignment is not installed yet.' }, 400);
+    }
+
     const webhookUrl = buildWebhookUrl();
     const webhookSecret = sanitizeKey(Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET'));
     const botName = Deno.env.get('BOT_NAME')?.trim() || 'Revora Assistant';
@@ -551,6 +562,7 @@ serve(async (req: Request): Promise<Response> => {
           const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
           await supabaseAdmin.from('meetings').insert({
             user_id: userId,
+            ...(projectId ? { project_id: projectId } : {}),
             meeting_url: meetingUrl,
             platform: detectPlatform(meetingUrl),
             title: title,
@@ -583,6 +595,7 @@ serve(async (req: Request): Promise<Response> => {
           .from('meetings')
           .insert({
             user_id: userId,
+            ...(projectId ? { project_id: projectId } : {}),
             bot_id: botId,
             meeting_url: meetingUrl,
             platform: detectPlatform(meetingUrl),

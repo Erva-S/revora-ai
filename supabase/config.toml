@@ -7,3 +7,9 @@ verify_jwt = true
 # MeetingBaaS cannot present a Supabase JWT. This endpoint authenticates
 # with MEETINGBAAS_WEBHOOK_SECRET instead (see the function source).
 verify_jwt = false
+
+[functions.index-meeting-context]
+verify_jwt = true
+
+[functions.generate-briefing]
+verify_jwt = true

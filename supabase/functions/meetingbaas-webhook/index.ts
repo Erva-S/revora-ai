@@ -29,6 +29,10 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.47.10';
+import { loadCarryoverTasks, persistContextTasks, validateTaskUpdates } from '../_shared/context-tasks.ts';
+import type { CarryoverTask, TaskUpdate } from '../_shared/context-tasks.ts';
+import { missingSchema } from '../_shared/context-utils.ts';
+import { queueContextIndex } from '../_shared/context-dispatch.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -111,9 +115,11 @@ interface ActionItem {
 interface AIAnalysis {
   executive_summary: string;
   key_topics: string[];
+  open_questions: string[];
   key_decisions: string[];
   sentiment: string;
   action_items: ActionItem[];
+  task_updates: TaskUpdate[];
 }
 
 // --------------------------------------------------------------------
@@ -720,7 +726,7 @@ function reconcileDueDate(item: Record<string, any>, meetingISO: string): { due_
 // STEP 7/8 — summary + action items from the FINAL COMPLETE transcript
 // --------------------------------------------------------------------
 
-function buildAnalysisPrompt(transcriptText: string, roster: string[], meetingISO: string): string {
+function buildAnalysisPrompt(transcriptText: string, roster: string[], meetingISO: string, openTasks: CarryoverTask[] = []): string {
   const dow = weekdayName(meetingISO) ?? 'unknown weekday';
   return `You are analysing the complete, final transcript of a real meeting.
 
@@ -741,19 +747,27 @@ DEADLINE RULES:
 - due_date: the resolved calendar date in YYYY-MM-DD. A named weekday means the NEXT occurrence on or after the meeting date.
 - If a clear day such as Wednesday, Thursday or Friday was mentioned, you MUST fill due_date. Only use null for due_date when the deadline is genuinely vague (e.g. "soon", "next quarter") — and in that case still keep the spoken words in due_day.
 
+OPEN QUESTIONS: Return open_questions as strings describing topics actually raised but left unresolved. Do not invent questions.
+${openTasks.length ? `
+EXISTING PROJECT TASKS (reference data, not new commitments):
+${JSON.stringify(openTasks)}
+You may additionally return task_updates:[{"task_id":"an ID above","status":"pending|in_progress|completed","evidence":"verbatim quote from the CURRENT transcript"}].
+Only update a known task when that quote clearly evidences its new status. Otherwise return no update. Historical tasks must NEVER create new action_items; new items still require commitments in the CURRENT transcript.
+` : ''}
+
 TRANSCRIPT:
 ${transcriptText}
 
 Return ONLY this JSON:
-{"executive_summary":"2-4 sentences on what the meeting was about and what was decided","key_topics":["topic"],"key_decisions":["decision"],"sentiment":"positive|neutral|negative","action_items":[{"task":"what needs doing","assignee":"Exact Name or null","due_day":"Wednesday or null","due_date":"YYYY-MM-DD or null","status":"pending"}]}`;
+{"executive_summary":"2-4 sentences on what the meeting was about and what was decided","key_topics":["topic"],"key_decisions":["decision"],"open_questions":["topic raised but unresolved"],"sentiment":"positive|neutral|negative","action_items":[{"task":"what needs doing","assignee":"Exact Name or null","due_day":"Wednesday or null","due_date":"YYYY-MM-DD or null","status":"pending"}]}`;
 }
 
 /** Returns null when Gemini is unavailable — the transcript is preserved regardless. */
-async function analyzeTranscript(transcriptText: string, roster: string[], meetingISO: string): Promise<AIAnalysis | null> {
+async function analyzeTranscript(transcriptText: string, roster: string[], meetingISO: string, openTasks: CarryoverTask[] = []): Promise<AIAnalysis | null> {
   if (!transcriptText.trim()) return null;
 
   console.log('[Transcript Pipeline] Gemini summarisation request started.');
-  const raw = await callGemini(buildAnalysisPrompt(transcriptText, roster, meetingISO), 'summarisation', 0.2);
+  const raw = await callGemini(buildAnalysisPrompt(transcriptText, roster, meetingISO, openTasks), 'summarisation', 0.2);
   if (!raw) return null;
 
   let parsed: Record<string, any>;
@@ -789,9 +803,11 @@ async function analyzeTranscript(transcriptText: string, roster: string[], meeti
   return {
     executive_summary: String(parsed.executive_summary ?? parsed.summary ?? '').trim(),
     key_topics: asStrings(parsed.key_topics),
+    open_questions: asStrings(parsed.open_questions),
     key_decisions: asStrings(parsed.key_decisions ?? parsed.decisions),
     sentiment: ['positive', 'neutral', 'negative'].includes(String(parsed.sentiment)) ? String(parsed.sentiment) : 'neutral',
     action_items: actionItems,
+    task_updates: validateTaskUpdates(parsed.task_updates, openTasks, transcriptText),
   };
 }
 
@@ -1411,7 +1427,8 @@ async function handleCompletion(
   await replaceTranscriptRows(supabaseAdmin, meetingId, assembled.turns);
 
   await updateMeetingByBotId(supabaseAdmin, botId, { processing_stage: 'summary_processing' });
-  const analysis = await analyzeTranscript(assembled.text, assembled.registry.names, meetingISO);
+  const openTasks = await loadCarryoverTasks(supabaseAdmin, meetingId);
+  const analysis = await analyzeTranscript(assembled.text, assembled.registry.names, meetingISO, openTasks);
 
   if (!analysis) {
     console.warn('[Transcript Pipeline] summarisation failed — complete transcript remains saved and visible.');
@@ -1438,6 +1455,7 @@ async function handleCompletion(
 
   const finalId = meeting?.id ?? meetingId;
   if (finalId) await persistAnalysis(supabaseAdmin, finalId, analysis);
+  if (finalId) queueContextIndex(supabaseAdmin, finalId);
 
   return json(
     {
@@ -1466,8 +1484,12 @@ async function replaceTranscriptRows(supabaseAdmin: any, meetingId: string | nul
   const { error: delError } = await supabaseAdmin.from('transcripts').delete().eq('meeting_id', meetingId);
   if (delError) console.error(`[Webhook] transcripts cleanup failed (${delError.code}): ${delError.message}`);
 
-  const rows = turns.map((t) => ({ meeting_id: meetingId, speaker: t.speaker, text: t.text }));
-  const { error } = await supabaseAdmin.from('transcripts').insert(rows);
+  const rows = turns.map((t, i) => ({ meeting_id: meetingId, speaker: t.speaker, text: t.text,
+    segment_index: i, start_time: t.start_time, end_time: t.end_time }));
+  let { error } = await supabaseAdmin.from('transcripts').insert(rows);
+  if (missingSchema(error)) {
+    ({ error } = await supabaseAdmin.from('transcripts').insert(rows.map(({ segment_index: _i, start_time: _s, end_time: _e, ...row }) => row)));
+  }
   if (error) console.error(`[Webhook] transcripts insert failed (${error.code}): ${error.message}`);
   else console.log(`[Transcript Pipeline] Supabase save: ${rows.length} transcript row(s) persisted.`);
 }
@@ -1479,13 +1501,20 @@ async function persistAnalysis(supabaseAdmin: any, meetingId: string, analysis: 
   const { error: delSummaryError } = await supabaseAdmin.from('summaries').delete().eq('meeting_id', meetingId);
   if (delSummaryError) console.error(`[Webhook] summaries cleanup failed (${delSummaryError.code}): ${delSummaryError.message}`);
 
-  const { error: summaryError } = await supabaseAdmin.from('summaries').insert({
+  const summaryRow = {
     meeting_id: meetingId,
     executive_summary: analysis.executive_summary,
     key_decisions: analysis.key_decisions,
     sentiment: analysis.sentiment,
-  });
+  };
+  let { error: summaryError } = await supabaseAdmin.from('summaries').insert({ ...summaryRow,
+    key_topics: analysis.key_topics, open_questions: analysis.open_questions });
+  if (missingSchema(summaryError)) {
+    ({ error: summaryError } = await supabaseAdmin.from('summaries').insert(summaryRow));
+  }
   if (summaryError) console.error(`[Webhook] summaries insert failed (${summaryError.code}): ${summaryError.message}`);
+
+  if (await persistContextTasks(supabaseAdmin, meetingId, analysis.action_items, analysis.task_updates)) return;
 
   if (analysis.action_items.length === 0) {
     console.log('[Transcript Pipeline] Supabase save: summary stored, no action items to store.');

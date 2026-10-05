@@ -14,17 +14,11 @@
 //                        persist meetings + transcripts + summaries + action_items.
 //
 // TRANSCRIPT ASSEMBLY (see assembleTranscript below)
-//   MeetingBaaS gives us two independent speaker signals for the same audio:
-//     * `transcription`  -> utterances, each with per-WORD timestamps and a
-//                           speaker name, but the speaker flips mid-sentence
-//                           whenever people overlap.
-//     * `diarization`    -> a coarser, cleaner speaker timeline (JSONL).
-//   We flatten every word, resolve each word's speaker from the diarization
-//   timeline (falling back to the utterance speaker), cut the stream into
-//   sentences on real punctuation, and award each sentence to whoever spoke
-//   most of it. Every word, timestamp and name comes from MeetingBaaS —
-//   nothing is generated. Gemini is then allowed to correct WHO said a line,
-//   never WHAT was said, and only using the known participant roster.
+//   The standardized transcription is authoritative for speaker names, word
+//   order and chunk-adjusted timing. Diarization only fills unresolved identities
+//   where one speaker is active. Overlapping utterances remain separate.
+//   Deterministic transcript data is saved before Gemini. Its attribution audit
+//   can fill unknown identities but cannot overwrite known provider identities.
 // ====================================================================
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
@@ -33,6 +27,8 @@ import { loadCarryoverTasks, persistContextTasks, validateTaskUpdates } from '..
 import type { CarryoverTask, TaskUpdate } from '../_shared/context-tasks.ts';
 import { missingSchema } from '../_shared/context-utils.ts';
 import { queueContextIndex } from '../_shared/context-dispatch.ts';
+import { recordingUrl, STT_PROVIDERS } from '../_shared/meetingbaas.ts';
+import { verifyMeetingBaasRequest } from '../_shared/meetingbaas-auth.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -71,19 +67,24 @@ interface DiarSpan {
 /** A single word from a MeetingBaaS utterance, re-keyed to a canonical speaker. */
 interface WordUnit {
   token: string;
-  start: number;
-  end: number;
+  start: number | null;
+  end: number | null;
   confidence: number;
   speaker: string | null;
   utteranceIndex: number;
+  source: 'provider' | 'diarization' | 'unknown';
+  wordTimed: boolean;
 }
 
 /** A transcript turn: real MeetingBaaS words, one resolved speaker. */
 interface TranscriptTurn {
   speaker: string;
   text: string;
-  start_time: number;
-  end_time: number;
+  start_time: number | null;
+  end_time: number | null;
+  speaker_source?: 'provider' | 'diarization' | 'unknown' | 'gemini';
+  source_utterance_index?: number;
+  words?: { word: string; start: number | null; end: number | null; confidence: number }[];
   /** true when more than one speaker's words fell inside this unit (overlap). */
   contested?: boolean;
   /** mean STT confidence across the words in this unit. */
@@ -126,21 +127,9 @@ interface AIAnalysis {
 // STEP 2 — participant roster from MeetingBaaS metadata (never hardcoded)
 // --------------------------------------------------------------------
 
-/** Title-case only the words the provider gave us in all-lowercase. */
-function toTitleCase(name: string): string {
-  return String(name)
-    .split(/(\s+)/)
-    .map((part) => {
-      if (!/[a-z]/.test(part)) return part;
-      if (part === part.toLowerCase()) return part.charAt(0).toUpperCase() + part.slice(1);
-      return part;
-    })
-    .join('');
-}
-
 /** Alias key: lowercase, punctuation collapsed to single spaces. */
 function normKey(s: unknown): string {
-  return String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return String(s ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
 /**
@@ -150,7 +139,13 @@ function normKey(s: unknown): string {
  */
 function buildParticipantRegistry(data: Record<string, any>): ParticipantRegistry {
   const reg: ParticipantRegistry = { names: [], lookup: new Map(), ids: [], map: {} };
-  const botKey = normKey(data?.bot_name);
+  const botKeys = new Set(data?.bot_name ? [data.bot_name, `${data.bot_name} (You)`, `${data.bot_name} (Guest)`].map(normKey) : []);
+  const ambiguous = new Set<string>();
+  const addAlias = (key: string, name: string) => {
+    if (!key || ambiguous.has(key)) return;
+    if (reg.lookup.has(key) && reg.lookup.get(key) !== name) { reg.lookup.delete(key); ambiguous.add(key); }
+    else reg.lookup.set(key, name);
+  };
 
   const consider = (entry: unknown) => {
     if (entry == null) return;
@@ -161,19 +156,19 @@ function buildParticipantRegistry(data: Record<string, any>): ParticipantRegistr
 
     // Never let the assistant bot become a transcript speaker.
     if (p.is_bot === true) return;
-    if (botKey && normKey(rawName) === botKey) return;
+    if (botKeys.has(normKey(rawName))) return;
 
-    const canonical = toTitleCase(String(rawName).trim());
+    const canonical = String(rawName).trim();
     if (!reg.names.includes(canonical)) reg.names.push(canonical);
 
     for (const alias of [rawName, canonical, p.display_name, p.user_name]) {
       const k = normKey(alias);
-      if (k) reg.lookup.set(k, canonical);
+      addAlias(k, canonical);
     }
     if (rawId !== undefined && rawId !== null && String(rawId).trim()) {
       const idKey = normKey(String(rawId));
-      reg.lookup.set(idKey, canonical);
-      reg.lookup.set(`speaker ${idKey}`, canonical);
+      addAlias(idKey, canonical);
+      addAlias(`speaker ${idKey}`, canonical);
       if (!reg.ids.includes(String(rawId))) reg.ids.push(String(rawId));
       reg.map[String(rawId)] = canonical;
     }
@@ -207,8 +202,9 @@ async function fetchSignedText(url: string, label: string): Promise<string | nul
       await new Promise((r) => setTimeout(r, BACKOFFS[attempt]));
     }
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (res.ok) return await res.text();
+      await res.body?.cancel();
       // 5xx → retry if attempts remain; anything else → give up.
       if (res.status >= 500 && attempt < BACKOFFS.length - 1) {
         console.warn(`[Webhook] ${label} artifact fetch HTTP ${res.status} (attempt ${attempt + 1}/${BACKOFFS.length}) — retrying.`);
@@ -245,7 +241,7 @@ function parseDiarizationTimeline(text: string | null): DiarSpan[] {
     const speakerId = item.speaker_id ?? item.user_id ?? item.id ?? (rawIsName ? undefined : rawSpeaker);
     const start = Number(item.start_time ?? item.start ?? item.from ?? NaN);
     const end = Number(item.end_time ?? item.end ?? item.to ?? NaN);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return;
     spans.push({
       speakerName: speakerName === undefined ? undefined : String(speakerName),
       speakerId: speakerId === undefined || speakerId === null ? undefined : String(speakerId),
@@ -281,24 +277,12 @@ function parseDiarizationTimeline(text: string | null): DiarSpan[] {
   return spans;
 }
 
-/** Which roster member was speaking at time `t`? Containment first, then <=1s nearest. */
-function diarizationSpeakerAt(timeline: DiarSpan[], t: number, reg: ParticipantRegistry): string | null {
-  for (const s of timeline) {
-    if (t >= s.start && t <= s.end) {
-      return canonicalSpeaker(reg, s.speakerName) ?? canonicalSpeaker(reg, s.speakerId);
-    }
-  }
-  let best: DiarSpan | null = null;
-  let bestGap = Infinity;
-  for (const s of timeline) {
-    const gap = t < s.start ? s.start - t : t - s.end;
-    if (gap >= 0 && gap < bestGap) {
-      bestGap = gap;
-      best = s;
-    }
-  }
-  if (!best || bestGap > 1.0) return null;
-  return canonicalSpeaker(reg, best.speakerName) ?? canonicalSpeaker(reg, best.speakerId);
+/** Fallback only: overlapping/nearby activity cannot override a named utterance. */
+function diarizationSpeakerAt(timeline: DiarSpan[], t: number | null, reg: ParticipantRegistry): string | null {
+  if (t === null) return null;
+  const active = new Set(timeline.filter((s) => t >= s.start && t < s.end)
+    .map((s) => canonicalSpeaker(reg, s.speakerName) ?? canonicalSpeaker(reg, s.speakerId)).filter(Boolean));
+  return active.size === 1 ? [...active][0]! : null;
 }
 
 /** Pull the utterance array out of whichever envelope the provider used. */
@@ -323,11 +307,11 @@ function extractUtterances(doc: unknown): Record<string, any>[] {
 // --------------------------------------------------------------------
 
 const TERMINAL_PUNCT = /[.!?]["')\]]?$/;
+const seconds = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
 /**
- * Flatten every utterance into one global, time-ordered word stream and resolve
- * each word's speaker from the diarization timeline (the cleaner signal),
- * falling back to the utterance's own speaker label. No word is dropped.
+ * Flatten within each utterance, keeping its words and provider identity intact.
+ * Diarization is used only when a named speaker cannot be resolved.
  */
 function flattenWords(
   utterances: Record<string, any>[],
@@ -342,32 +326,38 @@ function flattenWords(
 
   utterances.forEach((u, ui) => {
     const utteranceSpeaker = canonicalSpeaker(reg, u.speaker ?? u.speaker_name ?? u.speaker_id);
-    const list = Array.isArray(u.words) ? u.words : [];
+    let list = Array.isArray(u.words) ? u.words.filter((w: any) => w && typeof w === 'object') : [];
+    // Some providers return a partial word list. Preserve the complete utterance
+    // instead of silently dropping words that have no timing entry.
+    const fullText = String(u.text ?? u.transcript ?? '').trim();
+    const wordText = list.map((w: any) => String(w.word ?? w.text ?? '')).join(' ');
+    if (fullText && normKey(wordText) !== normKey(fullText)) list = [];
 
     if (list.length === 0) {
       // No per-word timings: keep the utterance intact as a single pseudo-word.
       stats.utterancesWithoutWordTimings++;
       const text = String(u.text ?? u.transcript ?? '').trim();
       if (!text) return;
-      const start = Number(u.start ?? u.start_time ?? 0);
-      const end = Number(u.end ?? u.end_time ?? start);
-      const mid = (start + end) / 2;
+      const start = seconds(u.start ?? u.start_time);
+      const end = seconds(u.end ?? u.end_time);
+      const mid = start !== null && end !== null ? (start + end) / 2 : null;
       const diar = diarizationSpeakerAt(timeline, mid, reg);
-      const speaker = diar ?? utteranceSpeaker;
+      const speaker = utteranceSpeaker ?? diar;
       if (!speaker) stats.wordsWithNoResolvableSpeaker++;
-      words.push({ token: ` ${text}`, start, end, confidence: Number(u.confidence ?? 0), speaker, utteranceIndex: ui });
+      words.push({ token: ` ${text}`, start, end, confidence: Number(u.confidence ?? 0), speaker, utteranceIndex: ui,
+        source: utteranceSpeaker ? 'provider' : diar ? 'diarization' : 'unknown', wordTimed: false });
       return;
     }
 
     for (const w of list) {
       const token = String(w.word ?? w.text ?? '');
       if (!token.trim()) continue;
-      const start = Number(w.start ?? w.start_time ?? u.start ?? 0);
-      const end = Number(w.end ?? w.end_time ?? start);
-      const mid = (start + end) / 2;
+      const start = seconds(w.start ?? w.start_time);
+      const end = seconds(w.end ?? w.end_time);
+      const mid = start !== null && end !== null ? (start + end) / 2 : null;
       const diar = diarizationSpeakerAt(timeline, mid, reg);
-      const speaker = diar ?? utteranceSpeaker;
-      if (diar && utteranceSpeaker && diar !== utteranceSpeaker) stats.diarizationOverrodeUtteranceSpeaker++;
+      const provided = canonicalSpeaker(reg, w.speaker) ?? utteranceSpeaker;
+      const speaker = provided ?? diar;
       if (!speaker) stats.wordsWithNoResolvableSpeaker++;
       words.push({
         token: token.startsWith(' ') ? token : ` ${token}`,
@@ -376,24 +366,24 @@ function flattenWords(
         confidence: Number(w.confidence ?? u.confidence ?? 0),
         speaker,
         utteranceIndex: ui,
+        source: provided ? 'provider' : diar ? 'diarization' : 'unknown',
+        wordTimed: true,
       });
     }
   });
 
-  words.sort((a, b) => a.start - b.start || a.end - b.end);
+  // Keep each utterance's word order: global timestamp sorting interleaves the
+  // words of simultaneous speakers into sentences that nobody actually spoke.
   stats.totalWords = words.length;
   return words;
 }
 
 /**
- * Cut the word stream into sentences on real punctuation (plus safety valves for
- * runaway length and long silences) and award each sentence to whoever spoke the
- * most of it by duration. This is what stops one sentence being split across two
- * speakers, and stops "Yes," / "sure." landing on separate lines.
+ * Segment within utterances, splitting on every speaker boundary. There is no
+ * majority vote that could hand a short reply to the person speaking longest.
  */
 function buildSentences(words: WordUnit[], stats: Record<string, number>): TranscriptTurn[] {
   const MAX_WORDS = 45;
-  const TURN_GAP = 1.2;
   const HARD_GAP = 4.0;
 
   const units: TranscriptTurn[] = [];
@@ -402,32 +392,18 @@ function buildSentences(words: WordUnit[], stats: Record<string, number>): Trans
 
   const flush = () => {
     if (cur.length === 0) return;
-    const durations = new Map<string, number>();
-    let firstSpeaker: string | null = null;
-    for (const w of cur) {
-      if (!w.speaker) continue;
-      if (firstSpeaker === null) firstSpeaker = w.speaker;
-      const d = Math.max(w.end - w.start, 0.01);
-      durations.set(w.speaker, (durations.get(w.speaker) ?? 0) + d);
-    }
-    let speaker = firstSpeaker;
-    let bestDur = -1;
-    for (const [name, d] of durations) {
-      if (d > bestDur) {
-        bestDur = d;
-        speaker = name;
-      }
-    }
-    if (durations.size > 1) contested++;
     const text = cur.map((w) => w.token).join('').replace(/\s+/g, ' ').trim();
     const confs = cur.map((w) => w.confidence).filter((c) => Number.isFinite(c) && c > 0);
     if (text) {
       units.push({
-        speaker: speaker ?? 'Unidentified Speaker',
+        speaker: cur[0].speaker ?? 'Unidentified Speaker',
         text,
         start_time: cur[0].start,
         end_time: cur[cur.length - 1].end,
-        contested: durations.size > 1,
+        contested: false,
+        speaker_source: cur[0].source,
+        source_utterance_index: cur[0].utteranceIndex,
+        ...(cur.every((w) => w.wordTimed) ? { words: cur.map((w) => ({ word: w.token.trim(), start: w.start, end: w.end, confidence: w.confidence })) } : {}),
         confidence: confs.length ? Number((confs.reduce((a, b) => a + b, 0) / confs.length).toFixed(3)) : 0,
       });
     }
@@ -438,15 +414,25 @@ function buildSentences(words: WordUnit[], stats: Record<string, number>): Trans
     const w = words[i];
     cur.push(w);
     const next = words[i + 1];
-    const gap = next ? next.start - w.end : Infinity;
+    const gap = next && next.start !== null && w.end !== null ? next.start - w.end : 0;
     const endsSentence = TERMINAL_PUNCT.test(w.token.trim());
     const tooLong = cur.length >= MAX_WORDS;
     const longSilence = gap >= HARD_GAP;
-    const speakerTurn = next ? gap >= TURN_GAP && next.speaker !== w.speaker : false;
+    const speakerTurn = next && (next.speaker !== w.speaker || next.utteranceIndex !== w.utteranceIndex);
     if (endsSentence || tooLong || longSilence || speakerTurn || !next) flush();
   }
   flush();
 
+  units.sort((a, b) => (a.start_time ?? Infinity) - (b.start_time ?? Infinity));
+  // Mark actual overlap without concatenating the simultaneous sentences.
+  let active: TranscriptTurn[] = [];
+  for (const turn of units) {
+    if (turn.start_time === null || turn.end_time === null) continue;
+    active = active.filter((u) => u.end_time! > turn.start_time!);
+    for (const other of active) if (other.speaker !== turn.speaker) { other.contested = true; turn.contested = true; }
+    active.push(turn);
+  }
+  contested = units.filter((u) => u.contested).length;
   stats.sentenceCount = units.length;
   stats.contestedSentences = contested;
   return units;
@@ -457,10 +443,13 @@ function mergeTurns(units: TranscriptTurn[], stats: Record<string, number>, maxG
   const out: TranscriptTurn[] = [];
   for (const u of units) {
     const prev = out[out.length - 1];
-    if (prev && prev.speaker === u.speaker && u.start_time - prev.end_time <= maxGap) {
+    if (prev && prev.speaker === u.speaker && !prev.contested && !u.contested &&
+        prev.speaker_source === u.speaker_source && u.start_time !== null && prev.end_time !== null &&
+        u.start_time >= prev.end_time && u.start_time - prev.end_time <= Math.min(maxGap, 2)) {
       prev.text += /^[,.!?;:']/.test(u.text) ? u.text : ` ${u.text}`;
       prev.end_time = u.end_time;
       prev.contested = prev.contested || u.contested;
+      prev.words = prev.words && u.words ? [...prev.words, ...u.words] : undefined;
       continue;
     }
     out.push({ ...u });
@@ -493,6 +482,7 @@ function applySpeakerCorrections(
     if (typeof c?.speaker !== 'string' || !roster.includes(c.speaker)) {
       return { units, rejected: 'speaker outside the MeetingBaaS participant roster' };
     }
+    if (units[idx].speaker_source !== 'unknown') return { units, rejected: 'cannot replace a provider/diarization identity using text alone' };
   }
   let applied = 0;
   const next = units.map((u) => ({ ...u }));
@@ -500,6 +490,7 @@ function applySpeakerCorrections(
     const idx = Number(c.index);
     if (next[idx].speaker !== c.speaker) {
       next[idx].speaker = c.speaker;
+      next[idx].speaker_source = 'gemini';
       applied++;
     }
   }
@@ -546,13 +537,16 @@ async function callGemini(prompt: string, label: string, temperature = 0.1): Pro
     return null;
   }
 
+  const deadline = Date.now() + (label === 'speaker re-attribution' ? 20000 : 60000);
   for (const model of geminiModelChain()) {
     for (let attempt = 1; attempt <= 2; attempt++) {
+      if (Date.now() >= deadline) return null;
       try {
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
           {
             method: 'POST',
+            signal: AbortSignal.timeout(Math.max(1, Math.min(20000, deadline - Date.now()))),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{ parts: [{ text: prompt }] }],
@@ -595,7 +589,7 @@ function buildReattributionPrompt(units: TranscriptTurn[], roster: string[]): st
   const lines = units
     .map((u, i) => {
       const flags = [
-        `t=${u.start_time.toFixed(1)}s`,
+        `t=${u.start_time === null ? 'unknown' : `${u.start_time.toFixed(1)}s`}`,
         `stt_confidence=${(u.confidence ?? 0).toFixed(2)}`,
         u.contested ? 'overlapping_speech=true' : '',
       ]
@@ -614,7 +608,7 @@ RULES — these are absolute:
 - You may ONLY use speaker names from the list above. Do not invent, rename, abbreviate or guess any other speaker.
 - You must NOT change, rewrite, add, remove, reorder or re-punctuate any transcript text. You are only allowed to change WHO said a line.
 - Do NOT merge lines, split lines, or renumber indexes.
-- Only propose a correction when the conversation logic makes the current attribution clearly wrong (for example: a person answering their own question, or a person reporting on a task that another person owns). Lines marked overlapping_speech=true or with low stt_confidence are the likeliest errors.
+- Only propose attribution for lines labelled "Unidentified Speaker" when the text explicitly identifies the speaker. Never override a named speaker, infer from task ownership, or guess from question/answer order. Overlap is not evidence of an incorrect identity.
 - If the current attribution is plausible, leave it alone. Returning an empty list is a valid and expected answer.
 
 TRANSCRIPT:
@@ -630,7 +624,7 @@ async function auditSpeakerAttribution(
   roster: string[],
   stats: Record<string, number>,
 ): Promise<TranscriptTurn[]> {
-  if (units.length === 0 || roster.length < 2) return units;
+  if (!units.some((u) => u.speaker_source === 'unknown') || roster.length < 2) return units;
 
   console.log('[Transcript Pipeline] Gemini speaker re-attribution request started.');
   const raw = await callGemini(buildReattributionPrompt(units, roster), 'speaker re-attribution', 0.1);
@@ -821,44 +815,37 @@ interface AssemblyResult {
   registry: ParticipantRegistry;
   stats: Record<string, number>;
   sourceWordCount: number;
+  provider: string | null;
 }
 
-async function assembleTranscript(data: Record<string, any>): Promise<AssemblyResult> {
+export async function assembleTranscript(data: Record<string, any>): Promise<AssemblyResult> {
   const stats: Record<string, number> = {};
-  const registry = buildParticipantRegistry(data);
-
-  console.log(`[Transcript Pipeline] participants resolved: ${registry.names.length ? registry.names.join(', ') : '(none)'}`);
-  console.log(`[Transcript Pipeline] speaker ids: [${registry.ids.join(', ')}]`);
-  console.log(`[Transcript Pipeline] speaker id -> participant map: ${JSON.stringify(registry.map)}`);
-
-  // 1. transcription artifact (utterances with per-word timings)
-  let utterances: Record<string, any>[] = [];
-  if (typeof data?.transcription === 'string' && data.transcription.startsWith('http')) {
-    const text = await fetchSignedText(data.transcription, 'transcription');
-    if (text) {
-      try {
-        utterances = extractUtterances(JSON.parse(text));
-      } catch (err) {
-        console.error(`[Webhook] transcription artifact was not valid JSON: ${scrub(err)}`);
-      }
-    }
-  } else if (data?.transcription && typeof data.transcription === 'object') {
-    utterances = extractUtterances(data.transcription);
+  const [transcriptionText, diarizationText] = await Promise.all([
+    typeof data.transcription === 'string' && data.transcription.startsWith('https://')
+      ? fetchSignedText(data.transcription, 'transcription') : Promise.resolve(null),
+    typeof data.diarization === 'string' && data.diarization.startsWith('https://')
+      ? fetchSignedText(data.diarization, 'diarization') : Promise.resolve(typeof data.diarization === 'string' ? data.diarization : null),
+  ]);
+  let doc = data.transcription;
+  if (typeof doc === 'string') {
+    // An artifact outage is retryable, not a successful silent meeting.
+    if (!transcriptionText) throw new Error('Transcription artifact unavailable; retry completion.');
+    try { doc = JSON.parse(transcriptionText); } catch { throw new Error('Invalid transcription artifact; retry completion.'); }
+    if (!Array.isArray(doc) && !Array.isArray(doc?.result?.utterances) && !Array.isArray(doc?.utterances))
+      throw new Error('Unexpected transcription artifact structure; retry completion.');
   }
-  if (utterances.length === 0) utterances = extractUtterances(data?.raw_transcription);
-
-  console.log(`[Transcript Pipeline] transcript segments received from MeetingBaaS: ${utterances.length}`);
-
-  // 2. diarization artifact (cleaner speaker timeline)
-  let timeline: DiarSpan[] = [];
-  if (typeof data?.diarization === 'string' && data.diarization.startsWith('http')) {
-    timeline = parseDiarizationTimeline(await fetchSignedText(data.diarization, 'diarization'));
-  } else if (typeof data?.diarization === 'string') {
-    timeline = parseDiarizationTimeline(data.diarization);
-  }
+  // v1 inline transcripts are still accepted for historical callbacks. Raw STT
+  // responses have chunk-relative times and anonymous IDs: never display them.
+  const utterances = extractUtterances(doc || data.transcript).filter((u) => u && typeof u === 'object');
+  const timeline = parseDiarizationTimeline(diarizationText);
+  let registry = buildParticipantRegistry(data);
+  const artifactNames = registry.names.length ? [] : [...utterances.map((u) => u.speaker), ...timeline.map((s) => s.speakerName)]
+    .filter((name) => typeof name === 'string' && name.trim() && !/^(?:speaker[ _-]*)?\d+$|^unknown$|^unidentified speaker$/i.test(name.trim()) && !canonicalSpeaker(registry, name));
+  registry = buildParticipantRegistry({ ...data, speakers: [...(Array.isArray(data.speakers) ? data.speakers : []), ...artifactNames] });
   console.log(`[Transcript Pipeline] diarization intervals: ${timeline.length}`);
 
-  const sourceWordCount = utterances.reduce((n, u) => n + countWords(String(u?.text ?? u?.transcript ?? '')), 0);
+  const sourceWordCount = utterances.reduce((n, u) => n + countWords(String(u?.text ?? u?.transcript ??
+    (Array.isArray(u.words) ? u.words.map((w: any) => w.word ?? w.text ?? '').join(' ') : ''))), 0);
 
   // 3. deterministic assembly
   const words = flattenWords(utterances, timeline, registry, stats);
@@ -869,16 +856,16 @@ async function assembleTranscript(data: Record<string, any>): Promise<AssemblyRe
   const sentences = buildSentences(words, stats);
   console.log(`[Transcript Pipeline] segments before cleanup: ${utterances.length} -> sentences: ${stats.sentenceCount} (contested: ${stats.contestedSentences})`);
 
-  // 4. Gemini audits WHO said each line (text is immutable)
-  const audited = await auditSpeakerAttribution(sentences, registry.names, stats);
-
-  // 5. merge consecutive same-speaker lines into readable turns
-  const turns = mergeTurns(audited, stats);
+  // Save deterministic content before any Gemini call. Attribution of unresolved
+  // identities is an optional later pass in handleCompletion.
+  const turns = mergeTurns(sentences, stats);
   const text = turnsToText(turns);
   console.log(`[Transcript Pipeline] segments after cleanup: ${stats.turnsAfterMerge}`);
   console.log(`[Transcript Pipeline] word conservation: source=${sourceWordCount} final=${countWords(turns.map((t) => t.text).join(' '))}`);
 
-  return { turns, text, registry, stats, sourceWordCount };
+  const reported = data.transcription_provider ?? doc?.provider;
+  return { turns, text, registry, stats, sourceWordCount,
+    provider: typeof reported === 'string' && STT_PROVIDERS.has(reported.toLowerCase()) ? reported.toLowerCase() : null };
 }
 
 // --------------------------------------------------------------------
@@ -913,11 +900,9 @@ function statusCodeFrom(body: Record<string, any>): string {
 
 /**
  * MeetingBaaS reasons that mean the bot is no longer in the meeting. They come
- * from the platform's own end-of-meeting detection, and `all_participants_left`
- * is the one that means "the last human participant left" - the bot watches the
- * live attendee roster and leaves once nobody but the bot remains. MeetingBaaS
- * exposes no participant join/leave event and no participant-count API for our
- * server to poll, so these reasons are how a departure reaches us.
+ * from the platform's own lifecycle. Historical all_participants_left aliases
+ * are accepted for stored/legacy events. Current v2 documents call_ended AFTER
+ * departure, not a live participant-left webhook or a current-roster endpoint.
  */
 function normalizeCode(code: string): string {
   // The same reason is spelled differently across the platform:
@@ -940,121 +925,18 @@ const MEETING_ENDED_CODES = [
 
 function isMeetingEndedCode(code: string): boolean {
   const c = normalizeCode(code);
-  return MEETING_ENDED_CODES.includes(c) || c.includes('ended') || c.includes('left');
+  return MEETING_ENDED_CODES.includes(c);
 }
 
-function meetingBaasBaseUrl(): string {
-  const raw = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || 'https://api.meetingbaas.com').trim();
-  return raw.replace(/\/+$/, '').replace(/\/v[12]$/i, '');
-}
-
-/**
- * Commands MeetingBaaS to immediately eject the bot from the meeting.
- * Idempotent: 404 and 409 are treated as successful departures.
- */
-async function triggerBotLeaveIfActive(botId: string): Promise<boolean> {
-  const cleanKey = (Deno.env.get('MEETINGBAAS_API_KEY') || '').trim();
-  if (!cleanKey || cleanKey.includes('your_meetingbaas')) {
-    console.warn(`[MeetingBaaS] Cannot trigger bot leave: MEETINGBAAS_API_KEY not configured.`);
-    return false;
-  }
-
-  const baseUrl = meetingBaasBaseUrl();
-  const headers = {
-    'x-meeting-baas-api-key': cleanKey,
-    'Content-Type': 'application/json',
-  };
-
-  const endpoints = [
-    { url: `${baseUrl}/v2/bots/${botId}/leave`, method: 'POST' },
-    { url: `${baseUrl}/bots/${botId}`, method: 'DELETE' },
-  ];
-
-  for (const target of endpoints) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const res = await fetch(target.url, { method: target.method, headers });
-        if (res.ok) {
-          return true;
-        }
-        // If 404 or 409, the bot is not in an active call (already left)
-        if (res.status === 404 || res.status === 409) {
-          return true;
-        }
-        const text = await res.text();
-        console.warn(`[MeetingBaaS] Leave request (${target.url}) returned HTTP ${res.status}: ${text}`);
-        if (res.status < 500) break;
-      } catch (err: any) {
-        console.error(`[MeetingBaaS] Leave request error (${target.url}, attempt ${attempt}/2):`, err?.message || String(err));
-      }
-    }
-  }
-  return false;
-}
-
-/**
- * Evaluates active participants, filtering out the bot's own identity and any
- * configured bot names so only true human participants are counted.
- */
-function evaluateHumanParticipants(
-  rawParticipants: any[],
-  botName: string,
-  extraIgnored: string[] = []
-): { humanCount: number; humans: string[]; bots: string[] } {
-  const norm = (s: unknown) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const botNorm = norm(botName);
-
-  const ignoredSet = new Set(
-    [
-      botName,
-      `${botName} (You)`,
-      `${botName} (Guest)`,
-      'Revora Assistant',
-      'Revora Assistant (You)',
-      'Revora Assistant (Guest)',
-      'AI Meeting Assistant',
-      'AI Meeting Assistant (You)',
-      'AI Meeting Assistant (Guest)',
-      ...extraIgnored,
-    ]
-      .map(norm)
-      .filter(Boolean)
-  );
-
-  const humans: string[] = [];
-  const bots: string[] = [];
-
-  for (const p of rawParticipants) {
-    if (!p) continue;
-    const name = typeof p === 'string' ? p : p.display_name || p.name || '';
-    const n = norm(name);
-    if (!n) continue;
-
-    const isBot =
-      (typeof p === 'object' && p !== null && (p.is_bot === true || p.isBot === true)) ||
-      n === botNorm ||
-      n === norm(`${botName}you`) ||
-      n === norm(`${botName}guest`) ||
-      n === 'you' ||
-      ignoredSet.has(n);
-
-    if (isBot) {
-      bots.push(name);
-    } else {
-      humans.push(name);
-    }
-  }
-
-  return { humanCount: humans.length, humans, bots };
-}
-
-function mapStatusChangeToStatus(
+export function mapStatusChangeToStatus(
   body: Record<string, any>,
 ): { status: 'pending' | 'recording' | 'failed'; processing_stage: Stage; error_message?: string; ended_at?: string } | null {
   const code = statusCodeFrom(body);
   if (!code) return null;
 
-  const errorMessage = body?.data?.error_message || body?.error_message || body?.data?.error || body?.error || null;
+  const errorMessage = body?.data?.status?.error_message || body?.data?.error_message || body?.error_message || body?.data?.error || body?.error || null;
+  const occurredAt = body?.data?.status?.created_at;
+  const endedAt = typeof occurredAt === 'string' && Number.isFinite(Date.parse(occurredAt)) ? occurredAt : new Date().toISOString();
 
   const FAILED = [
     'waiting_room_timeout',
@@ -1064,13 +946,16 @@ function mapStatusChangeToStatus(
     'login_required',
     'cannot_join_meeting',
     'timeout_waiting_to_start',
+    'recording_failed',
+    'bot_removed_too_early',
+    'failed',
   ];
   if (FAILED.includes(code)) {
     return {
       status: 'failed',
       processing_stage: 'processing_failed',
       error_message: errorMessage ? String(errorMessage) : `MeetingBaaS reported ${code}`,
-      ended_at: new Date().toISOString(),
+      ended_at: endedAt,
     };
   }
 
@@ -1078,17 +963,18 @@ function mapStatusChangeToStatus(
   // platform's end reason `recording_timeout` also contains "recording" and
   // must not be mistaken for a meeting that is still running.
   if (isMeetingEndedCode(code)) {
-    return { status: 'recording', processing_stage: 'meeting_ended', ended_at: new Date().toISOString() };
+    return { status: 'recording', processing_stage: 'meeting_ended', ended_at: endedAt };
   }
 
-  if (code.includes('recording') || code === 'in_call' || code === 'transcribing' || code === 'in_call_recording') {
+  if (['transcribing', 'recording_succeeded', 'completed'].includes(code)) {
+    return { status: 'recording', processing_stage: 'transcript_processing' };
+  }
+  if (['in_call_recording', 'recording_paused', 'recording_resumed', 'in_call'].includes(code)) {
     return { status: 'recording', processing_stage: 'meeting_in_progress' };
   }
 
   if (
-    ['queued', 'joining_call', 'in_waiting_room', 'in_waiting_for_host', 'in_call_not_recording'].includes(code) ||
-    code.includes('waiting') ||
-    code.includes('joining')
+    ['queued', 'pickup_delayed', 'joining_call', 'in_waiting_room', 'in_waiting_for_host', 'in_call_not_recording'].includes(code)
   ) {
     return { status: 'pending', processing_stage: 'bot_dispatched' };
   }
@@ -1107,26 +993,18 @@ serve(async (req: Request): Promise<Response> => {
   const t0 = Date.now();
 
   let body: Record<string, any> = {};
+  const rawBody = await req.text();
+  if (!await verifyMeetingBaasRequest(req, rawBody)) return json({ error: 'Invalid webhook signature or callback secret' }, 401);
   try {
-    body = await req.json();
+    body = JSON.parse(rawBody);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Invalid envelope');
   } catch {
     return json({ error: 'Payload must be valid JSON' }, 400);
   }
 
-  const expectedSecret = (Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET') || '').trim();
-  if (expectedSecret) {
-    const provided =
-      req.headers.get('x-mb-secret') ||
-      req.headers.get('x-webhook-secret') ||
-      new URL(req.url).searchParams.get('token') ||
-      '';
-    if (provided !== expectedSecret) {
-      console.warn('[Webhook] rejected event: webhook secret mismatch');
-      return json({ error: 'Invalid webhook secret' }, 401);
-    }
-  }
-
-  const eventType = String(body?.event || body?.type || body?.event_type || 'complete').toLowerCase();
+  const eventType = String(body?.event || body?.type || body?.event_type || '').toLowerCase();
+  if (!['bot.completed', 'complete', 'bot.failed', 'failed', 'bot.status_change'].includes(eventType))
+    return json({ success: true, ignored: 'unsupported event' }, 200);
   const data = body?.data ?? body;
   const botId = String(body?.bot_id || data?.bot_id || body?.bot?.id || body?.id || '').trim();
 
@@ -1141,18 +1019,21 @@ serve(async (req: Request): Promise<Response> => {
   const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY');
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
     console.error('[Webhook] Supabase service role is not configured — cannot persist.');
-    return json({ success: false, error: 'Server not configured' }, 200);
+    return json({ success: false, error: 'Server not configured' }, 503);
   }
 
   const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const { data: existing } = await supabaseAdmin
+  const { data: existing, error: lookupError } = await supabaseAdmin
     .from('meetings')
-    .select('id, status, summary, transcript')
+    .select('id, status, summary, transcript, processing_stage, ended_at, raw_payload, updated_at')
     .eq('bot_id', botId)
     .maybeSingle();
+  // A very fast bot can callback before deploy-bot inserts its owned row. Retry
+  // instead of inserting an ownerless meeting or acknowledging a lost update.
+  if (lookupError || !existing) return json({ success: false, error: 'Meeting lookup unavailable; retry delivery.' }, 503);
 
   try {
     const isCompletion = eventType === 'bot.completed' || eventType === 'complete';
@@ -1161,15 +1042,16 @@ serve(async (req: Request): Promise<Response> => {
     if (isCompletion) {
       const alreadyHasContent =
         existing?.status === 'summarized' ||
-        (existing?.status === 'completed' && (existing?.summary || existing?.transcript));
+        (existing?.status === 'completed' && (existing?.summary || existing?.transcript) &&
+          existing.processing_stage !== 'processing_failed');
       if (alreadyHasContent) {
         return json({ success: true, event: eventType, bot_id: botId, duplicate: true, status: existing.status }, 200);
       }
-      return await handleCompletion(supabaseAdmin, body, data, botId, existing?.id ?? null);
+      return await handleCompletion(supabaseAdmin, body, data, botId, existing.id, existing.ended_at);
     }
 
     if (isFailure) {
-      if (existing?.status === 'summarized') {
+      if (existing?.status === 'summarized' || (existing?.status === 'completed' && existing?.transcript)) {
         return json({ success: true, event: eventType, bot_id: botId, duplicate: true }, 200);
       }
       const code = data?.error_code ? ` [${data.error_code}]` : '';
@@ -1185,75 +1067,25 @@ serve(async (req: Request): Promise<Response> => {
       return json({ success: true, event: eventType, bot_id: botId, status: 'failed' }, 200);
     }
 
-    // 1. Participant event / roster analysis
-    const rawParticipants =
-      data?.participants ||
-      body?.participants ||
-      data?.attendees ||
-      body?.attendees ||
-      null;
-
-    const botName = Deno.env.get('BOT_NAME')?.trim() || 'Revora Assistant';
-    const envIgnored = (Deno.env.get('BOT_IGNORED_PARTICIPANT_NAMES') || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    let detectedZeroHumans = false;
-
-    if (Array.isArray(rawParticipants)) {
-      console.log(`[MeetingBaaS] Participant event received`);
-      const { humanCount } = evaluateHumanParticipants(rawParticipants, botName, envIgnored);
-      console.log(`[MeetingBaaS] Active human participants: ${humanCount}`);
-
-      if (humanCount > 0) {
-        console.log(`[MeetingBaaS] Human participants remain — keeping bot`);
-      } else {
-        console.log(`[MeetingBaaS] No human participants remain`);
-        detectedZeroHumans = true;
-      }
-    }
-
-    // 2. Check for meeting end status codes (all_participants_left, no_attendees, call_ended, etc.)
-    const rawCode = statusCodeFrom(body);
-    const normalized = normalizeCode(rawCode);
-    const isEndedEvent =
-      isMeetingEndedCode(rawCode) ||
-      isMeetingEndedCode(normalized) ||
-      eventType.includes('ended') ||
-      eventType.includes('leave') ||
-      eventType === 'participant.left';
-
-    // 3. If zero human participants remain or an end event was emitted, ensure bot is instructed to leave
-    //    The leave call is fire-and-forget so the DB update (and thus the
-    //    dashboard Realtime notification) is not blocked by API round-trips.
-    if (detectedZeroHumans || isEndedEvent) {
-      if (!detectedZeroHumans && !Array.isArray(rawParticipants)) {
-        console.log(`[MeetingBaaS] Participant event received`);
-        console.log(`[MeetingBaaS] Active human participants: 0`);
-        console.log(`[MeetingBaaS] No human participants remain`);
-      }
-
-      if (existing?.status !== 'summarized' && existing?.status !== 'completed') {
-        console.log(`[MeetingBaaS] T+${Date.now() - t0}ms Initiating bot leave (non-blocking)`);
-        // Fire-and-forget: don't await. The leave command is a defensive
-        // confirmation — MeetingBaaS already knows the meeting ended.
-        triggerBotLeaveIfActive(botId).then((ok) => {
-          if (ok) console.log(`[MeetingBaaS] Bot leave successful`);
-        }).catch((err) => {
-          console.warn(`[MeetingBaaS] Bot leave background error:`, err?.message || String(err));
-        });
-      }
-    }
-
+    // Auto-leave belongs to the provider, which has the live roster. v2 sends
+    // call_ended AFTER departure. participants is historical attendance, not an
+    // active count. Do not send speculative/duplicate stop commands here.
     const mapped = mapStatusChangeToStatus(body);
     // 5.3 — Ordering guard: a status_change must never move a meeting that is
     // already 'completed' or 'summarized' back to an earlier stage, and must not
     // overwrite its raw_payload. Failure events keep current behaviour (handled
     // above). This prevents out-of-order webhook deliveries from regressing a
     // finished meeting's status.
-    const isFinished = existing?.status === 'completed' || existing?.status === 'summarized';
+    const isFinished = ['completed', 'summarized', 'failed'].includes(existing.status);
     if (mapped && !isFinished) {
+      const previousAt = Date.parse(existing.raw_payload?.data?.status?.created_at || '');
+      const incomingAt = Date.parse(data?.status?.created_at || '');
+      const activeStage = ['bot_dispatched', 'meeting_in_progress'].includes(mapped.processing_stage);
+      const processing = ['transcript_processing', 'transcript_ready', 'summary_processing'].includes(existing.processing_stage);
+      if ((Number.isFinite(previousAt) && Number.isFinite(incomingAt) && incomingAt <= previousAt) ||
+          (activeStage && (existing.ended_at || processing)) ||
+          (mapped.processing_stage === 'bot_dispatched' && existing.status === 'recording'))
+        return json({ success: true, ignored: 'stale status event' }, 200);
       if (mapped.processing_stage === 'meeting_ended') {
         const endedCode = statusCodeFrom(body);
         console.log(
@@ -1261,7 +1093,13 @@ serve(async (req: Request): Promise<Response> => {
             (endedCode === 'all_participants_left' ? ' - no human participants remained.' : '')
         );
       }
-      await updateMeetingByBotId(supabaseAdmin, botId, { ...mapped, raw_payload: body }, true);
+      // CAS prevents a delayed status request from overwriting a concurrent
+      // completion. A retry will see the newer row and apply the ordering guard.
+      let query = supabaseAdmin.from('meetings').update({ ...mapped, raw_payload: body })
+        .eq('bot_id', botId).in('status', ['pending', 'recording']);
+      if (existing.updated_at) query = query.eq('updated_at', existing.updated_at);
+      const saved = await query.select('id').maybeSingle();
+      if (saved.error || !saved.data) return json({ success: false, error: 'Status update superseded or unavailable; retry.' }, 503);
       console.log(`[Webhook] T+${Date.now() - t0}ms DB updated (status=${mapped.status}, stage=${mapped.processing_stage})`);
       return json({ success: true, event: eventType, bot_id: botId, status: mapped.status, stage: mapped.processing_stage }, 200);
     }
@@ -1271,7 +1109,7 @@ serve(async (req: Request): Promise<Response> => {
     return json({ success: true, event: eventType, bot_id: botId, status: existing?.status ?? 'unchanged' }, 200);
   } catch (err) {
     console.error('[Webhook] processing error:', scrub(err));
-    return json({ success: false, error: 'Processing error' }, 200);
+    return json({ success: false, error: 'Processing error; retry delivery.' }, 503);
   }
 });
 
@@ -1331,14 +1169,14 @@ async function updateMeetingByBotId(
 
   let { data: saved, error } = await write(patch);
 
-  if (error && (error.code === '42703' || /column .* does not exist/i.test(error.message ?? ''))) {
+  if (missingSchema(error)) {
     const fallback = { ...patch };
     for (const c of OPTIONAL_COLUMNS) delete fallback[c];
     console.warn(`[Webhook] meetings update rejected an optional column (${error.message}) — retrying without ${OPTIONAL_COLUMNS.join('/')}. Apply migration 0004.`);
     ({ data: saved, error } = await write(fallback));
   }
 
-  if (error) console.error(`[Webhook] meetings write failed (${error.code}): ${error.message}`);
+  if (error || !saved) throw new Error(`Meeting persistence failed (${error?.code || 'no_row'}).`);
   return saved ?? null;
 }
 
@@ -1359,11 +1197,15 @@ async function handleCompletion(
   data: Record<string, any>,
   botId: string,
   knownMeetingId: string | null,
+  knownEndedAt?: string | null,
 ): Promise<Response> {
   console.log(`[Transcript Pipeline] MeetingBaaS meeting/bot id: ${botId}`);
 
-  const recordingUrl = data?.video ?? data?.audio ?? data?.mp4 ?? data?.mp3 ?? null;
-  console.log(`[Transcript Pipeline] recording available: ${recordingUrl ? 'yes' : 'no'}`);
+  const recording = recordingUrl(data);
+  const validDate = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+  const endedAt = validDate(data.exited_at) || knownEndedAt || new Date().toISOString();
+  const joinedAt = validDate(data.joined_at);
+  console.log(`[Transcript Pipeline] recording available: ${recording ? 'yes' : 'no'}`);
   console.log(`[Transcript Pipeline] transcription artifact available: ${data?.transcription ? 'yes' : 'no'}`);
   console.log(`[Transcript Pipeline] diarization artifact available: ${data?.diarization ? 'yes' : 'no'}`);
 
@@ -1373,10 +1215,11 @@ async function handleCompletion(
   await updateMeetingByBotId(supabaseAdmin, botId, {
     status: 'recording',
     processing_stage: 'transcript_processing',
-    recording_url: recordingUrl,
+    ...(recording ? { recording_url: recording } : {}),
   });
 
-  const assembled = await assembleTranscript(data);
+  const assembled = await assembleTranscript({ ...data,
+    bot_name: data.bot_name ?? body.extra?.revora?.bot_name ?? data.extra?.revora?.bot_name ?? Deno.env.get('BOT_NAME') });
   const meetingISO = meetingDateISO(data);
 
   // No speech / no transcript: finish honestly. Never fabricate content.
@@ -1385,9 +1228,10 @@ async function handleCompletion(
     const meeting = await updateMeetingByBotId(supabaseAdmin, botId, {
       status: 'completed',
       processing_stage: 'completed',
-      recording_url: recordingUrl,
+      ...(recording ? { recording_url: recording } : {}),
       duration_secs: durationSecs,
-      ended_at: new Date().toISOString(),
+      ended_at: endedAt,
+      ...(joinedAt ? { started_at: joinedAt } : {}),
       error_message: 'Meeting ended, but no transcript content was produced (no speech detected or transcription unavailable).',
       raw_payload: body,
     });
@@ -1399,11 +1243,8 @@ async function handleCompletion(
 
   // STEP 8: the transcript is complete before anything is summarised, and it is
   // persisted first so a Gemini failure can never cost us the transcript.
-  // 5.2 — Observability: record which provider produced this transcript and
-  // the full pipeline statistics so provider bake-offs can be compared from
-  // the database without re-running meetings. transcription_provider comes
-  // from the env var (verified: bot.completed payload does not expose it).
-  const sttProvider = (Deno.env.get('SPEECH_TO_TEXT_PROVIDER') || '').trim().toLowerCase() || null;
+  // Use the provider reported for THIS recording, not today's environment setting.
+  const sttProvider = assembled.provider;
   const transcriptMetrics = {
     ...assembled.stats,
     sourceWordCount: assembled.sourceWordCount,
@@ -1417,13 +1258,21 @@ async function handleCompletion(
     transcript_segments: assembled.turns,
     transcription_provider: sttProvider,
     transcript_metrics: transcriptMetrics,
-    recording_url: recordingUrl,
+    ...(recording ? { recording_url: recording } : {}),
     duration_secs: durationSecs,
-    ended_at: new Date().toISOString(),
+    ended_at: endedAt,
+    ...(joinedAt ? { started_at: joinedAt } : {}),
     error_message: null,
     raw_payload: body,
   });
   const meetingId = transcriptSaved?.id ?? knownMeetingId;
+  const audited = await auditSpeakerAttribution(assembled.turns, assembled.registry.names, assembled.stats);
+  if (assembled.stats.geminiCorrectionsApplied) {
+    assembled.turns = audited;
+    assembled.text = turnsToText(audited);
+    await updateMeetingByBotId(supabaseAdmin, botId, { transcript: assembled.text, transcript_segments: audited,
+      transcript_metrics: { ...transcriptMetrics, ...assembled.stats } });
+  }
   await replaceTranscriptRows(supabaseAdmin, meetingId, assembled.turns);
 
   await updateMeetingByBotId(supabaseAdmin, botId, { processing_stage: 'summary_processing' });

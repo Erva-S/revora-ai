@@ -422,10 +422,10 @@ commit real keys.
 Prerequisites: Node.js (with npm), and a Supabase project with the Supabase CLI
 installed and linked for deploying functions and setting secrets.
 
-1. Install frontend dependencies:
+1. Install the locked frontend dependencies:
 
    ```bash
-   npm install
+   npm ci
    ```
 
 2. Create your environment file from the template and fill in real values:
@@ -470,6 +470,24 @@ npm run lint      # Run oxlint
 ```
 
 These are the only scripts defined in `package.json`.
+
+### Fixing missing native bindings on Windows / WSL
+
+If Vite reports `Cannot find native binding` or a missing
+`@rolldown/binding-win32-x64-msvc`, reinstall from the checked-in lockfile in
+the same environment where you run the app:
+
+```sh
+npm ci --include=optional
+npm run dev
+```
+
+For Windows, run these commands in Command Prompt or PowerShell. For WSL, run
+them in the WSL terminal. `npm ci` replaces `node_modules` with the locked
+versions and the native binaries for that environment; keep `package-lock.json`.
+When switching between Windows and WSL in the same checkout, repeat the install
+in the destination environment. The project `.npmrc` includes optional packages
+because Rolldown, Tailwind and oxlint need them for their native binaries.
 
 ## Currently working
 

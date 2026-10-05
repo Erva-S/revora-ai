@@ -13,3 +13,6 @@ verify_jwt = true
 
 [functions.generate-briefing]
 verify_jwt = true
+
+[functions.get-meeting-recording]
+verify_jwt = true

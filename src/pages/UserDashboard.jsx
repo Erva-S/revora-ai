@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
 import ContextBriefingSection from '../components/ContextBriefingSection';
+import MeetingRecordingLink from '../components/MeetingRecordingLink';
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import TaskExtractorModal from '../components/TaskExtractorModal';
 import AttendeePicker from '../components/AttendeePicker';
@@ -863,20 +864,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
               <ContextBriefingSection key={`${selectedMeeting.id}:${selectedMeeting.project_id || ''}`} meeting={selectedMeeting} />
 
-              {selectedMeeting.recording_url && (
-                <a
-                  href={selectedMeeting.recording_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-between p-3.5 rounded-2xl bg-[#0084FF]/5 border border-[#0084FF]/20 hover:bg-[#0084FF]/10 transition-colors group"
-                >
-                  <span className="flex items-center gap-2.5 text-sm font-bold text-[#0084FF]">
-                    <Video className="w-4 h-4" />
-                    Watch Meeting Recording
-                  </span>
-                  <ExternalLink className="w-4 h-4 text-[#0084FF]/70 group-hover:text-[#0084FF]" />
-                </a>
-              )}
+              {selectedMeeting.recording_url && <MeetingRecordingLink key={selectedMeeting.id} meeting={selectedMeeting} />}
 
               {selectedMeeting.summary && (
                 <div className="space-y-2">

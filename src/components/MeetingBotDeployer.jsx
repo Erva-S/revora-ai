@@ -199,16 +199,23 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
   };
 
   const handleEjectBot = async () => {
-    if (!botStatus?.botId) return;
+    if (!botStatus?.botId || loading || botStatus.status === 'leaving') return;
     if (!window.confirm('Force the bot to leave the meeting immediately? This will end recording and trigger post-processing.')) return;
     try {
       setLoading(true);
+      setError(null);
       setBotStatus((current) => (current ? { ...current, status: 'leaving' } : null));
-      await supabase.functions.invoke(`deploy-bot?bot_id=${botStatus.botId}`, {
+      const { data, error: requestError } = await supabase.functions.invoke(`deploy-bot?bot_id=${botStatus.botId}`, {
         method: 'DELETE',
       });
+      if (requestError || !data?.success) {
+        let message = data?.error || 'Leave request failed. Please retry.';
+        try { message = (await requestError?.context?.json())?.error || message; } catch { /* retain fallback */ }
+        throw new Error(message);
+      }
     } catch (ejectErr) {
-      console.warn('Eject bot notice:', ejectErr);
+      setBotStatus((current) => current?.status === 'leaving' ? { ...current, status: botStatus.status } : current);
+      setError(ejectErr.message || 'Leave request failed. Please retry.');
     } finally {
       setLoading(false);
     }
@@ -462,10 +469,10 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
       </div>
 
       {/* Error */}
-      {botStatus.errorMessage && (
+      {(botStatus.errorMessage || error) && (
         <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-start gap-2">
           <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-          <span>{botStatus.errorMessage}</span>
+          <span>{botStatus.errorMessage || error}</span>
         </div>
       )}
 

@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient';
 import ActionItemCard from './ActionItemCard';
 import ContextBriefingSection from './ContextBriefingSection';
 import MeetingProjectAssignment from './MeetingProjectAssignment';
+import MeetingRecordingLink from './MeetingRecordingLink';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { Video, RefreshCw, Clock, ExternalLink, AlertCircle, Bot, Users } from 'lucide-react';
 
@@ -220,20 +221,7 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
              }} />
              <ContextBriefingSection key={`${selected.id}:${selected.project_id || ''}`} meeting={selected} />
 
-             {selected.recording_url && (
-              <a
-                href={selected.recording_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between p-3.5 rounded-2xl bg-[#0084FF]/5 border border-[#0084FF]/20 hover:bg-[#0084FF]/10 transition-colors group"
-              >
-                <span className="flex items-center gap-2.5 text-sm font-bold text-[#0084FF]">
-                  <Video className="w-4 h-4" />
-                  Watch Meeting Recording
-                </span>
-                <ExternalLink className="w-4 h-4 text-[#0084FF]/70 group-hover:text-[#0084FF]" />
-              </a>
-            )}
+             {selected.recording_url && <MeetingRecordingLink key={selected.id} meeting={selected} />}
 
             {selected.summary && (
               <div className="space-y-2">

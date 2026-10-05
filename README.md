@@ -101,6 +101,8 @@ The backend is Supabase:
 | `meetingbaas-webhook` | Disabled (`verify_jwt = false`) | Receive MeetingBaaS events and queue ElevenLabs transcription. Verifies callback secrets or Svix signatures. |
 | `elevenlabs-webhook` | Disabled (`verify_jwt = false`) | Verify ElevenLabs HMAC, durably store results, and finish transcript/Gemini processing in the background. |
 | `process-elevenlabs-transcription` | Enabled | Admin/service-only recovery of saved transcription results. |
+| `get-meeting-recording` | Enabled | Authenticate owner/admin, refresh and validate the video artifact, issue playback access or a scoped download grant. |
+| `download-meeting-recording` | Disabled | Verify a short-lived signed grant, recheck ownership/admin role, and stream actual MP4 bytes as an attachment. |
 
 These functions write to the database with the Supabase **service-role key**,
 which bypasses Row Level Security; RLS protects everyone else.
@@ -202,6 +204,8 @@ Transcription runs server-side. MeetingBaaS records the call; its completion
 callback creates a durable job and submits the signed audio URL to ElevenLabs
 with `model_id=scribe_v2`, word timestamps, diarization, and `webhook=true`.
 The signed ElevenLabs callback stores the result before background processing.
+Raw artifacts are archived separately from normalized/display turns; see
+[TRANSCRIPT_QUALITY.md](TRANSCRIPT_QUALITY.md) for the deterministic rules.
 
 The shared pipeline in `supabase/functions/_shared/meeting-pipeline.ts`
 preserves word order within each utterance and keeps overlapping speakers
@@ -212,6 +216,10 @@ MeetingBaaS-managed STT. Nearby, nonoverlapping same-speaker sentences can merge
 within two seconds. The transcript is saved before optional Gemini processing.
 
 Recording buttons refresh the signed URL on click through `get-meeting-recording`.
+Downloads use a separate authenticated-grant streaming endpoint. Video availability
+is independent of transcript/summary completion. Apply the recording-access
+migration and deploy **both** recording functions; see
+[RECORDING_PIPELINE.md](RECORDING_PIPELINE.md) for verified findings and setup.
 For credentials, migration, request details, and recovery instructions, see
 [ELEVENLABS_TRANSCRIPTION.md](ELEVENLABS_TRANSCRIPTION.md).
 
@@ -247,23 +255,16 @@ pipeline.
 
 Gemini is called over REST:
 `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
-with `temperature` 0.1 for attribution and 0.2 for summarisation,
+with `temperature` 0.2 for summarisation,
 `maxOutputTokens: 8192`, and `responseMimeType: 'application/json'`. The key
 comes from the `GEMINI_API_KEY` secret.
 
 ### What is sent to Gemini, and what it may return
 
-**Pass 1 — speaker re-attribution (WHO, never WHAT).** The prompt receives the
-final transcript turns, each labelled with its index, resolved speaker,
-`t=<seconds>`, `stt_confidence`, and an `overlapping_speech` flag, plus the
-participant roster. Gemini may only return
-`{"corrections":[{"index":0,"speaker":"Exact Name","reason":"..."}]}`.
-Guardrails: corrections must use an exact name from the roster and reference a
-valid index, otherwise the **entire batch is rejected** and the deterministic
-attribution is kept. Transcript text is never modified, merged, split, or
-renumbered. An empty correction list is a valid answer.
+**No Gemini transcript editing or attribution.** Provider/MeetingBaaS metadata
+alone determines transcript speaker identity and boundaries.
 
-**Pass 2 — summarisation.** This runs only after the transcript is complete and
+**Summarisation.** This runs only after the transcript is complete and
 already saved. The prompt receives the full transcript text, the participant
 roster, and the meeting date (used as "today" for spoken deadlines). It must
 return JSON with `executive_summary`, `key_topics`, `key_decisions`,
@@ -293,6 +294,7 @@ Created by the migrations in `supabase/migrations/`:
 | `profiles` | One row per user, linked to `auth.users`, holding `email`, `full_name`, `avatar_url`, and `role` (`user` or `admin`). |
 | `meetings` | One row per bot deployment: `user_id` (owner), `bot_id` (unique join key), `meeting_url`, `title`, `platform`, `status`, `processing_stage`, `recording_url`, `transcript`, `transcript_segments`, `summary`, `action_items` (jsonb), `duration_secs`, `error_message`, `raw_payload`, `started_at`, `ended_at`, timestamps. |
 | `transcripts` | One row per transcript turn (`meeting_id`, `speaker`, `text`). Rewritten on each delivery so duplicate webhooks cannot duplicate rows. |
+| `meeting_transcript_sources` | Service-only append-only raw webhook/artifact snapshots, deduplicated by meeting and content hash. |
 | `summaries` | `executive_summary`, `key_decisions`, `sentiment` per meeting. |
 | `action_items` | `task`, `assignee`, `due_day`, `due_date`, `status` per meeting. |
 
@@ -348,7 +350,7 @@ with a shorter one.
    bot id. If dispatch fails, a row is still written with `status = 'failed'`
    and the real MeetingBaaS error, and the API responds 502.
 5. **Join** — the bot joins the call and appears as a participant.
-6. **Live status** — MeetingBaaS sends `bot.status_change` callbacks; the
+6. **Live status** — MeetingBaaS sends account-level `bot.status_change` webhooks; the
    webhook updates the row, and Supabase Realtime pushes the change to the
    dashboards.
 7. **Leave** — the bot exits on its configured timeouts, when the call ends, or
@@ -357,8 +359,8 @@ with a shorter one.
    artifact URLs.
 9. **Transcript assembly** — the webhook fetches the artifacts, rebuilds the
    word-level transcript, and merges turns.
-10. **Attribution audit** — Gemini may correct *who* said a line, never *what*
-    was said.
+10. **Deterministic attribution** — provider word/utterance identities and stable
+    timeline evidence determine speakers. Gemini does not modify transcripts.
 11. **Persist transcript** — `meetings.transcript`, `meetings.transcript_segments`,
     the recording URL, duration, and `ended_at` are written, and the
     `transcripts` rows are replaced. The transcript is saved before any
@@ -369,7 +371,8 @@ with a shorter one.
     `meetings.status = 'summarized'`, `processing_stage = 'completed'`, plus the
     `summaries` and `action_items` rows.
 14. **Read** — the assigned user (and admins) see the meeting, summary,
-    transcript, action items, and recording link in the dashboard.
+    transcript, action items, and recording actions in the dashboard. Playback
+    refreshes the four-hour provider URL; downloads stream authorized MP4 bytes.
 
 ## Environment variables
 
@@ -391,7 +394,7 @@ commit real keys.
 | --- | --- | --- |
 | `SUPABASE_URL` | Yes | Injected by Supabase; used to build the webhook URL and create service-role clients. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Role verification and RLS-bypassing writes. `deploy-bot` refuses to deploy without it. |
-| `SUPABASE_ANON_KEY` | No | Fallback client key for writes. |
+| `SUPABASE_ANON_KEY` | Yes | Injected by Supabase; recording access uses a caller-JWT/RLS client. |
 | `MEETINGBAAS_API_KEY` | Yes | MeetingBaaS API key, sent as `x-meeting-baas-api-key`. |
 | `MEETINGBAAS_API_BASE_URL` | No | Defaults to `https://api.meetingbaas.com`; requires v2. |
 | `MEETINGBAAS_WEBHOOK_URL` | No | Overrides the callback URL; defaults to `{SUPABASE_URL}/functions/v1/meetingbaas-webhook`. |
@@ -407,7 +410,7 @@ commit real keys.
 | `BOT_WAITING_ROOM_TIMEOUT` | No | Seconds to wait in a lobby. Default `300`. |
 | `BOT_NO_ONE_JOINED_TIMEOUT` | No | Seconds to wait before leaving an empty call. Default `120`. |
 | `BOT_SILENCE_TIMEOUT` | No | Seconds of silence before leaving. Default/minimum `300`. |
-| `GEMINI_API_KEY` | Yes (for AI) | Gemini API key. Without it, summarisation and attribution are skipped and the transcript is preserved. |
+| `GEMINI_API_KEY` | Yes (for AI) | Gemini API key. Without it, summarisation is skipped and the deterministic transcript is preserved. |
 | `GEMINI_MODEL` | No | Preferred model. Ignored when the value is in the known-dead list. |
 
 ### Legacy Express server (`process.env`)
@@ -501,14 +504,14 @@ because Rolldown, Tailwind and oxlint need them for their native binaries.
   length protection.
 - Async ElevenLabs Scribe transcription from MeetingBaaS recordings, with
   durable jobs, word timestamps, speaker resolution, and saved-result recovery.
-- Gemini speaker re-attribution constrained to the MeetingBaaS participant
-  roster, with the text held immutable and invalid batches rejected.
+- Deterministic speaker boundaries and stable metadata-grounded naming, with
+  append-only raw source preservation and no Gemini transcript edits.
 - Gemini summarisation producing an executive summary, key decisions,
   sentiment, and action items with assignee validation and weekday-to-date
   deadline resolution.
 - Persistence of meetings, transcripts, summaries, and action items in
   Supabase, with Supabase Realtime driving live dashboard updates.
-- Meeting history with recording link, transcript, summary, and action items;
+- Meeting history with fresh recording playback/download access, transcript, summary, and action items;
   admin meeting monitor and user directory with role management.
 
 ## In progress
@@ -523,12 +526,10 @@ because Rolldown, Tailwind and oxlint need them for their native binaries.
 
 ## Known limitations
 
-- **No automatic departure when the last human leaves.** Nothing in this
-  codebase detects that all participants have left and tells the bot to exit.
-  Departure is limited to the three MeetingBaaS timeouts
-  (`BOT_WAITING_ROOM_TIMEOUT`, `BOT_NO_ONE_JOINED_TIMEOUT`,
-  `BOT_SILENCE_TIMEOUT`), the provider ending the call, or an admin manually
-  ejecting the bot.
+- **Departure uses MeetingBaaS's live roster/call signals and configured timeouts.**
+  Native `all_participants_left`/`call_ended` events mark departure; artifact
+  finalization remains asynchronous. Historical participant lists are not an
+  active-user count. An admin can also eject the bot.
 - **The legacy `server/` backend does not run.** Its `package.json` does not
   declare `dotenv`, `node-cron`, `nodemailer`, `@google/generative-ai`, or
   `mongoose`, all of which its files require, and it has no installed
@@ -556,14 +557,14 @@ because Rolldown, Tailwind and oxlint need them for their native binaries.
 
 ## Future improvements
 
-- Implement end-of-meeting detection so the bot leaves when the last human
-  participant exits, instead of relying on silence and empty-room timeouts.
+- Verify provider departure latency and recording-finalization timing with
+  live meetings, including rooms containing other configured ignored bots.
 - Replace the legacy Express/SQLite backend so that briefing generation and
   meeting scheduling use Supabase and the existing Gemini pipeline.
 - Drive the settings UI from the real, server-side configuration instead of
   hardcoded model and provider names.
-- Add automated tests for the transcript assembly, attribution guardrails, and
-  deadline resolution logic.
+- Benchmark transcription/speaker accuracy with known real-audio ground truth
+  alongside the automated assembly, recording, authorization, and context tests.
 - Persist `key_topics` alongside the executive summary, or remove it from the
   pipeline output.
 - Refresh `.env.example` so it matches the variables the code reads.

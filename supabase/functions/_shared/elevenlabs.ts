@@ -119,7 +119,6 @@ export async function queueElevenLabsTranscription(admin: any, meeting: any, dat
   // Prefer the much smaller FLAC audio artifact; video remains a valid fallback.
   const audio = recordingUrl({ video: data.audio, mp4: data.mp3, audio: data.video, mp3: data.mp4 });
   if (!audio) throw new ContextError('MeetingBaaS audio is not available; retry completion.', 503);
-  const recording = recordingUrl(data);
   const end = typeof data.exited_at === 'string' && Number.isFinite(Date.parse(data.exited_at))
     ? new Date(data.exited_at).toISOString() : meeting.ended_at || new Date().toISOString();
   let diarization = typeof data.diarization === 'string' && !data.diarization.startsWith('https://') ? data.diarization : null;
@@ -145,7 +144,7 @@ export async function queueElevenLabsTranscription(admin: any, meeting: any, dat
     // an already processed meeting back to recording.
     const savedMeeting = await admin.from('meetings').update({ status: 'recording', processing_stage: 'transcript_processing',
       transcription_provider: 'elevenlabs', ended_at: end, raw_payload: { event: 'bot.completed', data },
-      ...(recording ? { recording_url: recording } : {}), error_message: null })
+      error_message: null })
       .eq('id', meeting.id).in('status', ['pending', 'recording', 'failed']);
     requireDb(savedMeeting.error, 'Recording persistence');
     submissionAttempted = true;

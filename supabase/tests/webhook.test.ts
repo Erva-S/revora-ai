@@ -28,12 +28,15 @@ Deno.test('real webhook duplicate guards skip summarized and completed-with-cont
     let requests=0;
     globalThis.fetch=async(url,init)=>{
       requests++; assert.ok(String(url).includes('/rest/v1/meetings'));
-      assert.equal(init?.method,'GET');
+      if (init?.method !== 'GET') {
+        const patch=JSON.parse(String(init?.body));
+        assert.deepEqual(Object.keys(patch).sort(),['recording_metadata','recording_status','recording_url']);
+      }
       return Response.json([{id:meetingId,...meeting}]);
     };
     const response=await handler(makeRequest());
     assert.equal(response.status,200); assert.equal((await response.json()).duplicate,true);
-    assert.equal(requests,1); // no transcript, summary, task, chunk or Gemini writes
+    assert.equal(requests,2); // video metadata only; no transcript/summary/task/Gemini writes
   }
 }));
 
@@ -92,6 +95,9 @@ for (const migrated of [true,false]) Deno.test(`real webhook completion ${migrat
   assert.equal(response.status,200); assert.equal(result.status,'summarized');
   assert.equal(meeting.status,'summarized'); assert.equal(meeting.summary,analysis.executive_summary);
   assert.equal(meeting.recording_url,'https://artifacts.example.test/meeting.mp4');
+  assert.equal(meeting.recording_status,'ready');
+  assert.equal(meeting.recording_metadata.format,'mp4');
+  assert.equal(meeting.recording_metadata.duration_seconds,60);
   assert.equal(meeting.transcription_provider,'gladia');
   assert.equal(meeting.ended_at,'2026-10-01T10:01:00.000Z');
   assert.deepEqual(meeting.action_items,analysis.action_items); assert.ok(meeting.transcript.startsWith('Alice: I will ship'));
@@ -137,6 +143,7 @@ Deno.test('native call_ended is recorded once; duplicate and late recording even
     body:JSON.stringify({event:'bot.status_change',data:{bot_id:'test-bot',participants:[],status:{code,created_at:date}}})}));
   assert.equal((await status('call_ended','2026-10-01T13:00:00Z')).status,200);
   assert.equal(meeting.processing_stage,'meeting_ended');
+  assert.equal(meeting.recording_status,'processing');
   assert.equal(meeting.ended_at,'2026-10-01T13:00:00Z');
   await status('call_ended','2026-10-01T13:00:00Z');
   await status('in_call_recording','2026-10-01T12:59:00Z');
@@ -160,5 +167,26 @@ Deno.test('artifact download failure returns 503 and preserves the recording for
   assert.equal(response.status,503);
   assert.equal(meeting.status,'recording');
   assert.equal(meeting.recording_url,'https://artifacts.example.test/meeting.mp4');
+  assert.equal(meeting.recording_status,'ready');
   assert.equal(meeting.transcript,null);
+}));
+
+Deno.test('late video finalization updates a summarized meeting without rerunning transcription or summary', () => environment(async () => {
+  const meeting: any = { id:meetingId,status:'summarized',summary:'Existing summary',transcript:'Existing transcript',recording_status:'processing' };
+  globalThis.fetch = async (input, init) => {
+    assert.ok(String(input).includes('/rest/v1/meetings'));
+    if (init?.method !== 'GET') {
+      const patch = JSON.parse(String(init?.body));
+      assert.ok(!('transcript' in patch)); assert.ok(!('summary' in patch)); assert.ok(!('status' in patch));
+      Object.assign(meeting,patch);
+    }
+    return Response.json([meeting]);
+  };
+  const response = await handler(makeRequest());
+  assert.equal(response.status,200); assert.equal((await response.json()).duplicate,true);
+  assert.equal(meeting.recording_status,'ready'); assert.equal(meeting.recording_url,'https://artifacts.example.test/meeting.mp4');
+  assert.equal(meeting.transcript,'Existing transcript'); assert.equal(meeting.summary,'Existing summary');
+  meeting.recording_status='expired'; meeting.recording_url=null;
+  await handler(makeRequest());
+  assert.equal(meeting.recording_status,'expired'); assert.equal(meeting.recording_url,null);
 }));

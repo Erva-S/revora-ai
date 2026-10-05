@@ -15,7 +15,7 @@ import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDi
 import { 
   Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
-  Layers, Search, AlertCircle, Video, ExternalLink, Key,
+  Layers, Search, AlertCircle, Key,
   LayoutDashboard, Settings, User as UserIcon, LogIn
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -865,7 +865,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
               <ContextBriefingSection key={`${selectedMeeting.id}:${selectedMeeting.project_id || ''}`} meeting={selectedMeeting} />
 
-              {selectedMeeting.recording_url && <MeetingRecordingLink key={selectedMeeting.id} meeting={selectedMeeting} />}
+              {(selectedMeeting.bot_id || selectedMeeting.recording_url) && <MeetingRecordingLink key={selectedMeeting.id} meeting={selectedMeeting} />}
 
               {selectedMeeting.summary && (
                 <div className="space-y-2">

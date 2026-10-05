@@ -6,7 +6,7 @@ import MeetingProjectAssignment from './MeetingProjectAssignment';
 import MeetingRecordingLink from './MeetingRecordingLink';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
-import { Video, RefreshCw, Clock, ExternalLink, AlertCircle, Bot, Users } from 'lucide-react';
+import { RefreshCw, Clock, AlertCircle, Bot, Users } from 'lucide-react';
 
 /**
  * Admin-side meeting monitor.
@@ -222,7 +222,7 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
              }} />
              <ContextBriefingSection key={`${selected.id}:${selected.project_id || ''}`} meeting={selected} />
 
-             {selected.recording_url && <MeetingRecordingLink key={selected.id} meeting={selected} />}
+              {(selected.bot_id || selected.recording_url) && <MeetingRecordingLink key={selected.id} meeting={selected} />}
 
             {selected.summary && (
               <div className="space-y-2">

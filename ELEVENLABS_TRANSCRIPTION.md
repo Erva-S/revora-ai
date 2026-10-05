@@ -14,7 +14,10 @@ to preserve the existing post-meeting dashboard workflow.
 1. Apply `supabase/migrations/20261005000000_elevenlabs_transcription.sql` to
    the existing migrated database. It depends on the meetings table and
    `0005_transcription_provider_metrics.sql`. It adds the service-only
-   `meeting_transcription_jobs` table; each meeting has at most one job.
+   `meeting_transcription_jobs` table; each meeting has at most one job. Also
+   apply `20261005010000_transcript_provenance.sql` for separate raw source
+   snapshots. See [RECORDING_PIPELINE.md](RECORDING_PIPELINE.md) for the additional
+   recording-access migration and watch/download functions.
 2. In **ElevenLabs → Developers → Webhooks**, create an **HMAC** webhook with
    the **Transcription completed** event and this callback URL:
 
@@ -101,7 +104,8 @@ There is no additional ElevenLabs SDK dependency.
 - Supabase `EdgeRuntime.waitUntil` processes that saved result in the background;
   Gemini does not hold open the provider's webhook response.
 - Scribe's `speaker_0`/`speaker_1` are acoustic clusters, not participant IDs.
-  Names come only from unambiguous MeetingBaaS diarization. Unresolved speakers
+  Stable names require sustained, unambiguous MeetingBaaS timeline evidence;
+  clusters are never renamed independently word by word. Unresolved speakers
   retain distinct `Speaker 1`, `Speaker 2`, etc. labels.
 - The transcript is saved before Gemini, along with `transcription_provider`
   and the exact model in `transcript_metrics.model`. The job also stores its model.
@@ -119,6 +123,13 @@ await supabase.functions.invoke('process-elevenlabs-transcription', {
 The recovery endpoint accepts verified admins or the service key. It does not
 submit another transcription request. Processing uses a five-minute lease;
 an interrupted lease can be reclaimed after that time.
+
+To regenerate an already completed display transcript using the current
+deterministic rules, include `reprocess: true` in that request. It uses the
+saved Scribe result, preserves archived source snapshots, and reruns downstream
+summary/context processing without submitting/billing another STT job. Gemini
+is never used to rename speakers or rewrite transcript content; see
+[TRANSCRIPT_QUALITY.md](TRANSCRIPT_QUALITY.md).
 
 A network failure after submission is recorded as `submission_unknown`. The
 app waits for the signed callback rather than submitting/billing twice. If the

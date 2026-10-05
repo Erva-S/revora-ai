@@ -26,7 +26,8 @@ import { loadCarryoverTasks, persistContextTasks, validateTaskUpdates } from './
 import type { CarryoverTask, TaskUpdate } from './context-tasks.ts';
 import { missingSchema, sha256 } from './context-utils.ts';
 import { queueContextIndex } from './context-dispatch.ts';
-import { recordingUrl, STT_PROVIDERS } from './meetingbaas.ts';
+import { STT_PROVIDERS } from './meetingbaas.ts';
+import { recordingPatch, saveRecording, videoUrl } from './meeting-recording.ts';
 import { verifyMeetingBaasRequest } from './meetingbaas-auth.ts';
 import { queueElevenLabsTranscription } from './elevenlabs.ts';
 
@@ -1173,7 +1174,7 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
 
   const { data: existing, error: lookupError } = await supabaseAdmin
     .from('meetings')
-    .select('id, status, summary, transcript, transcription_provider, processing_stage, ended_at, raw_payload, updated_at')
+    .select('id, status, summary, transcript, transcription_provider, processing_stage, ended_at, raw_payload, updated_at, recording_status')
     .eq('bot_id', botId)
     .maybeSingle();
   // A very fast bot can callback before deploy-bot inserts its owned row. Retry
@@ -1185,6 +1186,11 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
     const isFailure = eventType === 'bot.failed' || eventType === 'failed';
 
     if (isCompletion) {
+      // Finalize video metadata independently, even on a late/duplicate
+      // completion whose transcription and summary are already saved.
+      if (existing.recording_status !== 'expired' &&
+          (videoUrl(data) || data.artifacts_deleted || data.data_deleted || existing.recording_status !== 'ready'))
+        await saveRecording(supabaseAdmin, existing.id, botId, recordingPatch({ ...data, bot_id: botId }, 'completed'));
       const alreadyHasContent =
         existing?.status === 'summarized' ||
         (existing?.status === 'completed' && (existing?.summary || existing?.transcript) &&
@@ -1250,7 +1256,9 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       }
       // CAS prevents a delayed status request from overwriting a concurrent
       // completion. A retry will see the newer row and apply the ordering guard.
-      let query = supabaseAdmin.from('meetings').update({ ...mapped, raw_payload: body })
+      const videoState = recordingPatch({ ...data, bot_id: botId });
+      let query = supabaseAdmin.from('meetings').update({ ...mapped,
+        ...(!['ready', 'expired'].includes(existing.recording_status) ? { recording_status: videoState.recording_status } : {}), raw_payload: body })
         .eq('bot_id', botId).in('status', ['pending', 'recording']);
       if (existing.updated_at) query = query.eq('updated_at', existing.updated_at);
       const saved = await query.select('id').maybeSingle();
@@ -1361,7 +1369,7 @@ export async function handleCompletion(
 ): Promise<Response> {
   console.log(`[Transcript Pipeline] MeetingBaaS meeting/bot id: ${botId}`);
 
-  const recording = recordingUrl(data);
+  const recording = videoUrl(data);
   const validDate = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
   const endedAt = validDate(data.exited_at) || knownEndedAt || new Date().toISOString();
   const joinedAt = validDate(data.joined_at);

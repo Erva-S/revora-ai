@@ -50,6 +50,34 @@ Deno.test('non-admins still cannot dispatch or eject a bot',()=>environment(asyn
   assert.equal((await handler(req())).status,403);assert.equal((await handler(req('DELETE'))).status,403);
 }));
 
+Deno.test('ElevenLabs dispatch records without requesting unsupported MeetingBaaS batch STT',()=>environment(async()=>{
+  const names=['ELEVENLABS_API_KEY','ELEVENLABS_WEBHOOK_ID','ELEVENLABS_WEBHOOK_SECRET','ELEVENLABS_MODEL_ID'];
+  const old=names.map(k=>Deno.env.get(k));
+  try {
+    Deno.env.set('SPEECH_TO_TEXT_PROVIDER','elevenlabs');
+    names.forEach((k,i)=>Deno.env.set(k,['test-eleven-key','test-webhook','test-signing-secret','scribe_v2'][i]));
+    let dispatched=false;
+    globalThis.fetch=async(input,init)=>{
+      const url=String(input);const auth=authResponse(url);if(auth)return auth;
+      const body=JSON.parse(String(init?.body));
+      if(url==='https://provider.test/v2/bots'){
+        dispatched=true;
+        assert.equal(body.transcription_enabled,false);assert.equal(body.transcription_config,undefined);
+        assert.equal(body.extra.revora.transcription_provider,'elevenlabs');assert.equal(body.extra.revora.transcription_model,'scribe_v2');
+        assert.ok(!JSON.stringify(body).includes('test-eleven-key'));
+        return Response.json({success:true,data:{bot_id:botId}},{status:201});
+      }
+      assert.equal(body.transcription_provider,'elevenlabs');
+      return Response.json({id:meetingId,bot_id:botId,status:'pending'},{status:201});
+    };
+    assert.equal((await handler(req())).status,200);assert.equal(dispatched,true);
+    Deno.env.delete('ELEVENLABS_API_KEY');
+    dispatched=false;
+    globalThis.fetch=async(input)=>{const auth=authResponse(String(input));assert.ok(auth,'no bot call when ElevenLabs is unconfigured');return auth;};
+    const refused=await handler(req());assert.equal(refused.status,500);assert.match((await refused.json()).error,/ELEVENLABS_API_KEY/);
+  } finally { names.forEach((k,i)=>old[i]===undefined?Deno.env.delete(k):Deno.env.set(k,old[i]!)); }
+}));
+
 Deno.test('accepted leave does not mark recording ended before provider handoff',()=>environment(async()=>{
   globalThis.fetch=async(input)=>{
     const url=String(input);const auth=authResponse(url);if(auth)return auth;

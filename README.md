@@ -1,8 +1,8 @@
 # Revora
 
 Revora is an AI meeting assistant. An administrator dispatches a bot into a live
-Google Meet, Zoom, or Microsoft Teams call; the bot records the meeting and
-produces a timestamped, speaker-attributed transcript; a Gemini pipeline then
+Google Meet, Zoom, or Microsoft Teams call; MeetingBaaS records the meeting and
+ElevenLabs Scribe v2 produces a timestamped, speaker-attributed transcript; a Gemini pipeline then
 generates an executive summary and a deduplicated list of action items with
 owners and deadlines. Users see only the meetings assigned to them.
 
@@ -22,13 +22,15 @@ against the specific user who is allowed to read it.
 | Frontend | React 19, Vite 8, React Router 7, Tailwind CSS 4 |
 | UI libraries | Framer Motion, lucide-react, react-markdown, canvas-confetti, clsx, tailwind-merge |
 | Lint | oxlint |
-| Backend | Supabase: Postgres, Auth, Realtime, and two Deno Edge Functions |
+| Backend | Supabase: Postgres, Auth, Realtime, and Deno Edge Functions |
 | Meeting bot | MeetingBaaS v2 API |
+| Transcription | ElevenLabs Scribe v2, asynchronous batch API |
 | AI | Google Gemini via the `generativelanguage.googleapis.com` REST API |
 | Legacy backend | Express + Sequelize/SQLite under `server/` (not part of the current pipeline) |
 
 There is no custom Node server in the working architecture. All server-side
-logic lives in the two Supabase Edge Functions.
+logic lives in Supabase Edge Functions. See [ElevenLabs transcription setup](ELEVENLABS_TRANSCRIPTION.md)
+for the current provider configuration and deployment steps.
 
 ## Project structure
 
@@ -43,7 +45,9 @@ futurrizon/
 │   ├── config.toml                  Per-function JWT verification settings
 │   ├── functions/
 │   │   ├── deploy-bot/index.ts             Admin-only bot dispatch and ejection
-│   │   └── meetingbaas-webhook/index.ts    Public webhook: transcript + Gemini pipeline
+│   │   ├── meetingbaas-webhook/index.ts    Recording callbacks and lifecycle events
+│   │   ├── elevenlabs-webhook/index.ts     Signed asynchronous transcription results
+│   │   └── process-elevenlabs-transcription/index.ts  Saved-result recovery
 │   └── migrations/                  Postgres schema, RLS policies, triggers
 ├── src/
 │   ├── main.jsx                     React root
@@ -89,14 +93,16 @@ The backend is Supabase:
 - **Auth** issues the JWTs used by the frontend and by the `deploy-bot`
   function.
 - **Realtime** broadcasts changes on `public.meetings` to the dashboards.
-- **Two Edge Functions** (Deno, TypeScript) hold all privileged logic:
+- **Edge Functions** (Deno, TypeScript) hold privileged logic:
 
 | Function | JWT verification | Responsibility |
 | --- | --- | --- |
 | `deploy-bot` | Enabled (`verify_jwt = true` in `supabase/config.toml`) | Verify the caller is an admin, dispatch a MeetingBaaS bot, create the meeting row. Also handles admin-initiated bot ejection via `DELETE`. |
-| `meetingbaas-webhook` | Disabled (`verify_jwt = false`) | Receive MeetingBaaS events, assemble the transcript, run the Gemini passes, and persist everything. Authenticates with a shared secret instead of a JWT. |
+| `meetingbaas-webhook` | Disabled (`verify_jwt = false`) | Receive MeetingBaaS events and queue ElevenLabs transcription. Verifies callback secrets or Svix signatures. |
+| `elevenlabs-webhook` | Disabled (`verify_jwt = false`) | Verify ElevenLabs HMAC, durably store results, and finish transcript/Gemini processing in the background. |
+| `process-elevenlabs-transcription` | Enabled | Admin/service-only recovery of saved transcription results. |
 
-Both functions write to the database with the Supabase **service-role key**,
+These functions write to the database with the Supabase **service-role key**,
 which bypasses Row Level Security; RLS protects everyone else.
 
 ## Supabase and authentication
@@ -158,22 +164,18 @@ MeetingBaaS is the meeting-bot platform. It is responsible for:
 - Joining the meeting with a bot identity (`BOT_NAME`, optional
   `BOT_ENTRY_MESSAGE`, optional `BOT_IMAGE_URL`).
 - Recording the call in `speaker_view` mode.
-- Running speech-to-text through the configured provider
-  (`SPEECH_TO_TEXT_PROVIDER`; valid v2 values are `gladia`, `deepgram`,
-  `assemblyai`, `speechmatics`, `soniox` — the function validates the value and
-  falls back to `gladia`).
+- Returning recorded audio for direct ElevenLabs transcription (the default).
+  Setting `SPEECH_TO_TEXT_PROVIDER` to `gladia`, `deepgram`, `assemblyai`,
+  `speechmatics`, or `soniox` instead enables MeetingBaaS-managed batch STT.
 - Producing **diarization** (a speaker timeline).
 - Delivering lifecycle callbacks to the Revora webhook.
 - Providing signed artifact URLs for the transcription JSON, the diarization
   JSONL, and the recording.
 
-The dispatch payload contains both the v1 and v2 property shapes for
-compatibility (`webhook_url` / `speech_to_text` / `automatic_leave` and
-`callback_enabled` + `callback_config` / `transcription_enabled` +
-`transcription_config` / `timeout_config`). Only the v2 fields are honored by
-the v2 API. Dispatch tries `POST /v2/bots`, then `/v1/bots`, then `/bots` (or
-`/v1/bots` first if `MEETINGBAAS_API_BASE_URL` ends in `/v1`), authenticating
-with the `x-meeting-baas-api-key` header.
+Dispatch uses only `POST /v2/bots`, with `x-meeting-baas-api-key` authentication.
+ElevenLabs mode sends `transcription_enabled: false` and records the selected
+provider/model in `extra.revora`. Revora submits the completed recording to
+ElevenLabs; it never sends an unsupported ElevenLabs batch provider to MeetingBaaS.
 
 ## Google Meet bot flow
 
@@ -196,36 +198,29 @@ with the `x-meeting-baas-api-key` header.
 
 ## Recording and transcription flow
 
-Transcription does **not** happen in the browser. The bot streams audio to
-MeetingBaaS, which runs the external STT provider and returns artifacts. The
-webhook then rebuilds a clean transcript from those artifacts:
+Transcription runs server-side. MeetingBaaS records the call; its completion
+callback creates a durable job and submits the signed audio URL to ElevenLabs
+with `model_id=scribe_v2`, word timestamps, diarization, and `webhook=true`.
+The signed ElevenLabs callback stores the result before background processing.
 
-1. **Fetch artifacts** — the `transcription` artifact (utterances with
-   per-word timings) and the `diarization` artifact (speaker timeline) are
-   downloaded from their signed URLs.
-2. **Build the participant roster** from MeetingBaaS metadata
-   (`data.participants` / `data.speakers`). This roster is the only set of
-   speaker names accepted anywhere downstream; nothing is hardcoded.
-3. **Flatten to words** — every word is placed in one global, time-ordered
-   stream, and its speaker is resolved from the diarization timeline (falling
-   back to the utterance's own speaker label). No word is dropped.
-4. **Cut sentences** — the stream is split on real punctuation, with safety
-   valves for runs over 45 words or gaps of 4 seconds, and each sentence is
-   awarded to whichever speaker voiced most of it by duration. This prevents a
-   single sentence from being split across two speakers.
-5. **Gemini attribution audit** (WHO only) — see below.
-6. **Merge turns** — consecutive same-speaker sentences within 20 seconds are
-   merged into one readable turn, then rendered as `Speaker: text`.
+The shared pipeline in `supabase/functions/_shared/meeting-pipeline.ts`
+preserves word order within each utterance and keeps overlapping speakers
+separate. Scribe's acoustic speaker IDs are never treated as participant IDs.
+Unambiguous MeetingBaaS diarization supplies names; otherwise distinct numbered
+speaker labels are retained. Named provider identities are authoritative for
+MeetingBaaS-managed STT. Nearby, nonoverlapping same-speaker sentences can merge
+within two seconds. The transcript is saved before optional Gemini processing.
 
-The webhook logs word conservation (source word count vs final word count) so
-that text loss is detectable rather than silent.
+Recording buttons refresh the signed URL on click through `get-meeting-recording`.
+For credentials, migration, request details, and recovery instructions, see
+[ELEVENLABS_TRANSCRIPTION.md](ELEVENLABS_TRANSCRIPTION.md).
 
 ## Gemini integration
 
 ### Exact model used
 
 The webhook does **not** hardcode a single model. `callGemini` walks a model
-chain defined in `supabase/functions/meetingbaas-webhook/index.ts`:
+chain defined in `supabase/functions/_shared/meeting-pipeline.ts`:
 
 ```ts
 const KNOWN_DEAD_MODELS = new Set(['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']);
@@ -398,16 +393,20 @@ commit real keys.
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Role verification and RLS-bypassing writes. `deploy-bot` refuses to deploy without it. |
 | `SUPABASE_ANON_KEY` | No | Fallback client key for writes. |
 | `MEETINGBAAS_API_KEY` | Yes | MeetingBaaS API key, sent as `x-meeting-baas-api-key`. |
-| `MEETINGBAAS_API_BASE_URL` | No | Defaults to `https://api.meetingbaas.com`; a trailing `/v1` changes endpoint preference order. |
+| `MEETINGBAAS_API_BASE_URL` | No | Defaults to `https://api.meetingbaas.com`; requires v2. |
 | `MEETINGBAAS_WEBHOOK_URL` | No | Overrides the callback URL; defaults to `{SUPABASE_URL}/functions/v1/meetingbaas-webhook`. |
 | `MEETINGBAAS_WEBHOOK_SECRET` | Recommended | Shared secret the webhook requires. If unset, the check is skipped. |
 | `BOT_NAME` | No | Bot display name. Defaults to `Revora Assistant`. |
 | `BOT_ENTRY_MESSAGE` | No | Message the bot posts on joining. |
 | `BOT_IMAGE_URL` | No | Optional bot avatar. |
-| `SPEECH_TO_TEXT_PROVIDER` | No | STT provider; must be one of the v2 providers, otherwise `gladia` is used. |
+| `SPEECH_TO_TEXT_PROVIDER` | No | Defaults to `elevenlabs`; other supported providers use MeetingBaaS batch STT. Unsupported values are rejected. |
+| `ELEVENLABS_API_KEY` | For ElevenLabs | Server-only ElevenLabs Speech-to-Text API key. |
+| `ELEVENLABS_MODEL_ID` | No | Defaults to `scribe_v2`; also accepts `scribe_v1`. |
+| `ELEVENLABS_WEBHOOK_ID` | For ElevenLabs | HMAC webhook configured for Transcription completed. |
+| `ELEVENLABS_WEBHOOK_SECRET` | For ElevenLabs | Secret used to verify the raw-body ElevenLabs signature. |
 | `BOT_WAITING_ROOM_TIMEOUT` | No | Seconds to wait in a lobby. Default `300`. |
 | `BOT_NO_ONE_JOINED_TIMEOUT` | No | Seconds to wait before leaving an empty call. Default `120`. |
-| `BOT_SILENCE_TIMEOUT` | No | Seconds of silence before leaving. Default `30`. |
+| `BOT_SILENCE_TIMEOUT` | No | Seconds of silence before leaving. Default/minimum `300`. |
 | `GEMINI_API_KEY` | Yes (for AI) | Gemini API key. Without it, summarisation and attribution are skipped and the transcript is preserved. |
 | `GEMINI_MODEL` | No | Preferred model. Ignored when the value is in the known-dead list. |
 
@@ -434,11 +433,8 @@ installed and linked for deploying functions and setting secrets.
    cp .env.example .env
    ```
 
-   Note that `.env.example` is out of date: it does not list
-   `SUPABASE_SERVICE_ROLE_KEY`, `MEETINGBAAS_WEBHOOK_SECRET`,
-   `MEETINGBAAS_WEBHOOK_URL`, or the `BOT_*` values, and it includes
-   `PUBLIC_WEBHOOK_URL`, which nothing reads. Add the variables you need from
-   the table above.
+    Configure hosted Edge secrets separately. The ElevenLabs key, webhook ID,
+    and webhook secret are required before dispatching an ElevenLabs-mode bot.
 
 3. Apply the database migrations to your Supabase project, in lexical order
    (`0002`, `0003`, `0004`, then the timestamped files). The order matters: the
@@ -449,11 +445,13 @@ installed and linked for deploying functions and setting secrets.
 4. Create at least one user, then make it an admin by setting its
    `profiles.role` to `admin`.
 
-5. Deploy the two Edge Functions and set their secrets:
+5. Follow [ElevenLabs setup](ELEVENLABS_TRANSCRIPTION.md), then deploy the functions:
 
    ```bash
    supabase functions deploy deploy-bot
-   supabase functions deploy meetingbaas-webhook
+    supabase functions deploy meetingbaas-webhook
+    supabase functions deploy elevenlabs-webhook
+    supabase functions deploy process-elevenlabs-transcription
    supabase secrets set MEETINGBAAS_API_KEY=... GEMINI_API_KEY=... SUPABASE_SERVICE_ROLE_KEY=... MEETINGBAAS_WEBHOOK_SECRET=...
    ```
 
@@ -501,9 +499,8 @@ because Rolldown, Tailwind and oxlint need them for their native binaries.
 - Webhook processing of `bot.status_change`, `bot.failed`, and
   `bot.completed` events, with duplicate-delivery protection and transcript
   length protection.
-- Word-level transcript reconstruction from MeetingBaaS transcription and
-  diarization artifacts, with speaker resolution, sentence segmentation, and
-  turn merging.
+- Async ElevenLabs Scribe transcription from MeetingBaaS recordings, with
+  durable jobs, word timestamps, speaker resolution, and saved-result recovery.
 - Gemini speaker re-attribution constrained to the MeetingBaaS participant
   roster, with the text held immutable and invalid batches rejected.
 - Gemini summarisation producing an executive summary, key decisions,
@@ -516,8 +513,8 @@ because Rolldown, Tailwind and oxlint need them for their native binaries.
 
 ## In progress
 
-- The AI model surfaced in the UI ("Gemini 1.5 Flash", "Gladia v2 Realtime")
-  is static copy rather than a read of the actual configured model or provider.
+- The settings UI shows static model/default-provider copy rather than reading
+  deployed secrets. Actual ElevenLabs model selection is recorded per job.
 - Pre-meeting briefings and the meeting scheduling form talk to the legacy
   Express API on port 5001 rather than to Supabase, so that path is separate
   from the meeting pipeline.
@@ -546,7 +543,7 @@ because Rolldown, Tailwind and oxlint need them for their native binaries.
   the UI is concerned.
 - **The "Test Mic" control** in the dashboard is a UI toggle with a confetti
   animation; it does not capture or transcribe audio. All transcription happens
-  through MeetingBaaS.
+  server-side through the recording/transcription pipeline.
 - **Deleted users**: the admin delete action removes the `profiles` row only;
   the `auth.users` record remains.
 - **`.env.example` is stale** relative to the variables the code actually

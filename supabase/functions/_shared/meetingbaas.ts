@@ -1,15 +1,21 @@
 import { ContextError } from './context-utils.ts';
 
-// Verified against MeetingBaaS v2 createBot, transcription, artifacts and leaveBot
-// references. See MEETINGBAAS_IMPROVEMENTS.md for sources and hosted limitations.
-export const STT_PROVIDERS = new Set(['gladia', 'deepgram', 'assemblyai', 'speechmatics', 'soniox']);
+// ElevenLabs batch transcription runs directly after MeetingBaaS records the call.
+// MeetingBaaS supports ElevenLabs only in its separate WebSocket streaming API.
+export const MEETINGBAAS_STT_PROVIDERS = new Set(['gladia', 'deepgram', 'assemblyai', 'speechmatics', 'soniox']);
+export const STT_PROVIDERS = new Set([...MEETINGBAAS_STT_PROVIDERS, 'elevenlabs']);
 export const sanitizeKey = (value: string | undefined): string => (value || '').replace(/^["'\s]+|["'\s]+$/g, '').trim();
 
-export function transcriptionConfig() {
+export function transcriptionProvider(): string {
   const configured = sanitizeKey(Deno.env.get('SPEECH_TO_TEXT_PROVIDER')).toLowerCase();
-  // Preserve the legacy "Default" setting, but catch actual misspellings.
-  const provider = !configured || configured === 'default' ? 'gladia' : configured;
-  if (!STT_PROVIDERS.has(provider)) throw new ContextError('Unsupported SPEECH_TO_TEXT_PROVIDER. Choose a documented MeetingBaaS batch provider.');
+  const provider = !configured || configured === 'default' ? 'elevenlabs' : configured;
+  if (!STT_PROVIDERS.has(provider)) throw new ContextError('Unsupported SPEECH_TO_TEXT_PROVIDER. Choose elevenlabs or a documented MeetingBaaS batch provider.');
+  return provider;
+}
+
+export function transcriptionConfig() {
+  const provider = transcriptionProvider();
+  if (provider === 'elevenlabs') return { provider };
   const apiKey = sanitizeKey(Deno.env.get('SPEECH_TO_TEXT_API_KEY'));
   const customParams: Record<string, unknown> = {};
   if (provider === 'gladia') {
@@ -28,6 +34,12 @@ export function transcriptionConfig() {
   }
   return { provider, ...(apiKey ? { api_key: apiKey } : {}),
     ...(Object.keys(customParams).length ? { custom_params: customParams } : {}) };
+}
+
+export function meetingBaasTranscriptionConfig(stt: ReturnType<typeof transcriptionConfig>) {
+  return stt.provider === 'elevenlabs'
+    ? { transcription_enabled: false }
+    : { transcription_enabled: true, transcription_config: stt };
 }
 
 export function meetingBaasBaseUrl(): string {

@@ -19,7 +19,8 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.47.10';
-import { botCaptureConfig, meetingBaasRequest, sanitizeKey, transcriptionConfig } from '../_shared/meetingbaas.ts';
+import { botCaptureConfig, meetingBaasRequest, meetingBaasTranscriptionConfig, sanitizeKey, transcriptionConfig } from '../_shared/meetingbaas.ts';
+import { elevenLabsConfig } from '../_shared/elevenlabs.ts';
 import { ContextError } from '../_shared/context-utils.ts';
 
 const corsHeaders = {
@@ -289,6 +290,8 @@ serve(async (req: Request): Promise<Response> => {
       Deno.env.get('BOT_ENTRY_MESSAGE')?.trim() ||
       "Hi, I'm an AI assistant here to take notes for this meeting.";
     const stt = transcriptionConfig();
+    // Refuse a new recording if its external transcription cannot be configured.
+    const elevenlabs = stt.provider === 'elevenlabs' ? elevenLabsConfig() : null;
     const botImageUrl = Deno.env.get('BOT_IMAGE_URL')?.trim() || undefined;
 
     // Use the actual v2 contract. Creating on speculative fallback endpoints after
@@ -299,15 +302,15 @@ serve(async (req: Request): Promise<Response> => {
       ...botCaptureConfig(botName),
       entry_message: entryMessage,
       ...(botImageUrl ? { bot_image: botImageUrl } : {}),
-      transcription_enabled: true,
-      transcription_config: stt,
+      ...meetingBaasTranscriptionConfig(stt),
       callback_enabled: true,
       callback_config: {
         url: webhookUrl,
         method: 'POST',
         ...(webhookSecret ? { secret: webhookSecret } : {}),
       },
-      extra: { revora: { bot_name: botName, transcription_provider: stt.provider } },
+      extra: { revora: { bot_name: botName, transcription_provider: stt.provider,
+        ...(elevenlabs ? { transcription_model: elevenlabs.model } : {}) } },
     };
 
     let botId: string | null = null;
@@ -368,6 +371,7 @@ serve(async (req: Request): Promise<Response> => {
             platform: detectPlatform(meetingUrl),
             title: title,
             status: 'pending',
+            transcription_provider: stt.provider,
             started_at: new Date().toISOString(),
           })
           .select('id, bot_id, status')

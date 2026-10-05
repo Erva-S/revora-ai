@@ -11,10 +11,11 @@ import AttendeePicker from '../components/AttendeePicker';
 import MeetingCalendar from '../components/MeetingCalendar';
 import ActionItemCard, { readActionItem } from '../components/ActionItemCard';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
+import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
 import { 
   Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
-  Layers, Search, AlertCircle, Video, ExternalLink,
+  Layers, Search, AlertCircle, Video, ExternalLink, Key,
   LayoutDashboard, Settings, User as UserIcon, LogIn
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -609,8 +610,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   </div>
                   <p className="text-xs text-black/60">Audio transcription provider for MeetingBaaS integration.</p>
                   <div className="px-3.5 py-2 rounded-xl bg-white border border-black/10 font-mono text-xs text-black font-semibold flex items-center justify-between">
-                    <span>Gladia v2 Realtime</span>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">Connected</span>
+                    <span>ElevenLabs Scribe · Batch</span>
+                    <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold">Default</span>
                   </div>
                 </div>
               </div>
@@ -880,11 +881,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   <div className="flex items-center justify-between">
                     <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
                     <span className="text-[11px] font-mono text-black/50">
-                      {selectedMeeting.transcript.split('\n').filter(Boolean).length} dialogue turns • {selectedMeeting.transcript.length} characters
+                      {transcriptParagraphs(selectedMeeting).length} dialogue turns • {selectedMeeting.transcript.length} characters
                     </span>
                   </div>
                   <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[350px] overflow-y-auto shadow-inner">
-                    {selectedMeeting.transcript}
+                    {transcriptDisplayText(selectedMeeting)}
                   </div>
                 </div>
               )}

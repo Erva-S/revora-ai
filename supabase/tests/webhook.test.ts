@@ -54,6 +54,11 @@ for (const migrated of [true,false]) Deno.test(`real webhook completion ${migrat
       return Response.json({candidates:[{content:{parts:[{text:JSON.stringify(analysis)}]}}]});
     }
     if (url.pathname.endsWith('/index-meeting-context')) return Response.json({error:'Simulated index outage'},{status:503});
+    if (url.pathname.endsWith('/meeting_transcript_sources')) {
+      assert.equal(body.payload.webhook_payload.event,'bot.completed');
+      assert.deepEqual(body.payload.standardized_transcription,JSON.parse(await makeRequest().text()).data.transcription);
+      return new Response(null,{status:201});
+    }
     if (url.pathname.endsWith('/meetings')) {
       if (method==='GET') return Response.json([meeting]);
       if (!migrated && body.context_status) return missing();

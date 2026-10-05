@@ -16,3 +16,10 @@ verify_jwt = true
 
 [functions.get-meeting-recording]
 verify_jwt = true
+
+[functions.elevenlabs-webhook]
+# ElevenLabs HMAC is verified against the raw request body in the handler.
+verify_jwt = false
+
+[functions.process-elevenlabs-transcription]
+verify_jwt = true

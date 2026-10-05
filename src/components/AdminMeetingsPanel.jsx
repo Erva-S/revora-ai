@@ -5,6 +5,7 @@ import ContextBriefingSection from './ContextBriefingSection';
 import MeetingProjectAssignment from './MeetingProjectAssignment';
 import MeetingRecordingLink from './MeetingRecordingLink';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
+import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
 import { Video, RefreshCw, Clock, ExternalLink, AlertCircle, Bot, Users } from 'lucide-react';
 
 /**
@@ -237,12 +238,12 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Full Transcript</h4>
                   <span className="text-[11px] font-mono text-slate-500">
-                    {selected.transcript.split('\n').filter(Boolean).length} dialogue turns •{' '}
+                    {transcriptParagraphs(selected).length} dialogue turns •{' '}
                     {selected.transcript.length} characters
                   </span>
                 </div>
                 <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-h-[320px] overflow-y-auto shadow-inner">
-                  {selected.transcript}
+                  {transcriptDisplayText(selected)}
                 </div>
               </div>
             )}

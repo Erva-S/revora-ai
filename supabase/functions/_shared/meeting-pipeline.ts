@@ -30,6 +30,7 @@ import { STT_PROVIDERS } from './meetingbaas.ts';
 import { recordingPatch, saveRecording, videoUrl } from './meeting-recording.ts';
 import { verifyMeetingBaasRequest } from './meetingbaas-auth.ts';
 import { queueElevenLabsTranscription } from './elevenlabs.ts';
+import { meetingEventMetadata, pipelineLog, scrub } from './pipeline-log.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -41,15 +42,6 @@ function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
-}
-
-// Redact query strings so signed artifact URLs never leak their tokens to logs.
-function scrub(v: unknown): string {
-  const s = v instanceof Error ? v.message || v.name : String(v ?? '');
-  return s.replace(/(https?:\/\/[^\s)'"]+)/g, (u) => {
-    const q = u.indexOf('?');
-    return q === -1 ? u : `${u.slice(0, q)}?<redacted>`;
   });
 }
 
@@ -320,12 +312,19 @@ function diarizationSpeakerForInterval(
 /** Acoustic IDs are a separate namespace. Map a cluster only when sustained,
  * nonoverlapping timeline evidence agrees; do not rename it word by word.
  */
+function sourceSpeakerId(u: Record<string, any>, w: Record<string, any> = {}): string {
+  const id = w.speaker_id ?? w.speakerId ?? w.speaker?.id ?? (typeof w.speaker === 'string' ? w.speaker : null) ??
+    u.speaker_id ?? u.cluster ?? u.speakerId ?? u.speaker?.id ?? (typeof u.speaker === 'string' ? u.speaker : null);
+  return String(id ?? 'unknown');
+}
+
 function acousticSpeakerMappings(utterances: Record<string, any>[], timeline: DiarSpan[], reg: ParticipantRegistry) {
   const evidence = new Map<string, { total: number; votes: Map<string, number> }>();
   for (const u of utterances) {
-    if (!u.anonymous_speaker_label || typeof u.speaker_id !== 'string') continue;
-    const item = evidence.get(u.speaker_id) ?? { total: 0, votes: new Map<string, number>() };
-    for (const word of Array.isArray(u.words) ? u.words : []) {
+    for (const word of Array.isArray(u.words) && u.words.length ? u.words : [u]) {
+      const id = sourceSpeakerId(u, word);
+      const item = evidence.get(id) ?? { total: 0, votes: new Map<string, number>() };
+      evidence.set(id, item);
       const start = seconds(word.start ?? word.start_time);
       const end = seconds(word.end ?? word.end_time);
       if (start === null || end === null || end <= start) continue;
@@ -337,8 +336,8 @@ function acousticSpeakerMappings(utterances: Record<string, any>[], timeline: Di
         (canonicalSpeaker(reg, span.speakerName) ?? canonicalSpeaker(reg, span.speakerId)) === resolved.speaker)
         .reduce((n, span) => n + overlap(start, end, span.start, span.end), 0));
       item.votes.set(resolved.speaker, (item.votes.get(resolved.speaker) ?? 0) + covered);
+      evidence.set(id, item);
     }
-    evidence.set(u.speaker_id, item);
   }
   return new Map([...evidence].map(([id, item]) => {
     const ranked = [...item.votes].sort((a, b) => b[1] - a[1]);
@@ -346,7 +345,7 @@ function acousticSpeakerMappings(utterances: Record<string, any>[], timeline: Di
     const observed = ranked.reduce((n, [, score]) => n + score, 0);
     const agreement = first && observed ? first[1] / observed : 0;
     const coverage = item.total ? observed / item.total : 0;
-    const participant = first && first[1] >= 0.5 && agreement >= 0.9 && coverage >= 0.7 ? first[0] : null;
+    const participant = id !== 'unknown' && first && first[1] >= 2 && agreement >= 0.9 && coverage >= 0.7 ? first[0] : null;
     return [id, { speaker_id: id, participant, evidence_seconds: observed, agreement }] as const;
   }));
 }
@@ -391,25 +390,24 @@ function flattenWords(
   const words: WordUnit[] = [];
   const mappings = acousticSpeakerMappings(utterances, timeline, reg);
   const fallbackLabels = new Map<string, string>();
+  const identity = (u: Record<string, any>, w: Record<string, any> = {}) => {
+    const id = sourceSpeakerId(u, w);
+    if (!fallbackLabels.has(id)) fallbackLabels.set(id, `Speaker ${fallbackLabels.size + 1}`);
+    const acoustic = !!u.anonymous_speaker_label || /^speaker[_ -]?\d+$|^\d+$|^unknown$/i.test(id);
+    const rawName = w.speaker?.name ?? w.speaker_name ?? (typeof w.speaker === 'string' ? w.speaker : null) ??
+      (canonicalSpeaker(reg, id) ? id : null) ??
+      u.speaker?.name ?? u.speaker_name ?? (typeof u.speaker === 'string' ? u.speaker : null);
+    const provided = acoustic ? null : canonicalSpeaker(reg, rawName);
+    const mapping = mappings.get(id);
+    return { id, speaker: provided ?? mapping?.participant ?? fallbackLabels.get(id)!, mapping,
+      source: provided ? 'provider' as const : mapping?.participant ? 'diarization' as const : 'unknown' as const };
+  };
   stats.utterancesWithoutWordTimings = 0;
   stats.diarizationOverrodeUtteranceSpeaker = 0;
   stats.wordsWithNoResolvableSpeaker = 0;
   stats.overlapWords = 0;
 
   utterances.forEach((u, ui) => {
-    const utteranceSpeakerId = u.speaker_id ?? u.cluster ?? u.speakerId ?? null;
-    // ElevenLabs acoustic clusters must never be matched to roster numeric IDs.
-    const acoustic = typeof u.anonymous_speaker_label === 'string' && /^Speaker \d+$/.test(u.anonymous_speaker_label);
-    const anonymousLabel = acoustic
-      ? u.anonymous_speaker_label : null;
-    const mapping = typeof utteranceSpeakerId === 'string' ? mappings.get(utteranceSpeakerId) : undefined;
-    const suppliedSpeaker = typeof u.speaker === 'object' ? u.speaker?.name ?? u.speaker?.id : u.speaker;
-    const utteranceSpeaker = acoustic ? null : canonicalSpeaker(reg, suppliedSpeaker ?? u.speaker_name ?? u.speaker_id);
-    const fallbackId = utteranceSpeakerId ?? suppliedSpeaker;
-    const fallback = fallbackId !== null && fallbackId !== undefined && !/^(unknown|unidentified speaker)$/i.test(String(fallbackId))
-      ? String(fallbackId) : null;
-    if (fallback && !fallbackLabels.has(fallback)) fallbackLabels.set(fallback, `Speaker ${fallbackLabels.size + 1}`);
-    const unknownLabel = anonymousLabel ?? (fallback ? fallbackLabels.get(fallback)! : null);
     let list = Array.isArray(u.words) ? u.words.filter((w: any) => w && typeof w === 'object') : [];
     // Some providers return a partial word list. Preserve the complete utterance
     // instead of silently dropping words that have no timing entry.
@@ -425,12 +423,12 @@ function flattenWords(
       const start = seconds(u.start ?? u.start_time);
       const end = seconds(u.end ?? u.end_time);
       const diar = diarizationSpeakerForInterval(timeline, start, end, reg);
-      const speaker = acoustic ? mapping?.participant ?? anonymousLabel : utteranceSpeaker ?? diar.speaker ?? unknownLabel;
-      if (!utteranceSpeaker && !diar.speaker) stats.wordsWithNoResolvableSpeaker++;
+      const resolved = identity(u);
+      if (resolved.source === 'unknown') stats.wordsWithNoResolvableSpeaker += countWords(text);
       if (diar.contested) stats.overlapWords++;
-      words.push({ token: ` ${text}`, start, end, confidence: Number(u.confidence ?? 0), speaker, utteranceIndex: u.source_utterance_index ?? ui,
-        sourceSpeakerId: utteranceSpeakerId, contested: diar.contested, mapping,
-        source: anonymousLabel ? (mapping?.participant ? 'diarization' : 'unknown') : utteranceSpeaker ? 'provider' : diar.speaker ? 'diarization' : 'unknown', wordTimed: false });
+      words.push({ token: ` ${text}`, start, end, confidence: Number(u.confidence ?? 0), speaker: resolved.speaker, utteranceIndex: u.source_utterance_index ?? ui,
+        sourceSpeakerId: resolved.id, contested: diar.contested, mapping: resolved.mapping,
+        source: resolved.source, wordTimed: false });
       return;
     }
 
@@ -440,23 +438,21 @@ function flattenWords(
       const start = seconds(w.start ?? w.start_time);
       const end = seconds(w.end ?? w.end_time);
       const diar = diarizationSpeakerForInterval(timeline, start, end, reg);
-      const wordSpeaker = w.speaker && typeof w.speaker === 'object' ? w.speaker.name ?? w.speaker.id : w.speaker;
-      const provided = anonymousLabel ? null : canonicalSpeaker(reg, wordSpeaker ?? w.speaker_name ?? w.speaker_id) ?? utteranceSpeaker;
-      const speaker = acoustic ? mapping?.participant ?? anonymousLabel : provided ?? diar.speaker ?? unknownLabel;
-      if (!provided && !diar.speaker) stats.wordsWithNoResolvableSpeaker++;
+      const resolved = identity(u, w);
+      if (resolved.source === 'unknown') stats.wordsWithNoResolvableSpeaker++;
       if (diar.contested) stats.overlapWords++;
       words.push({
         token: typeof w.separator === 'string' ? `${w.separator}${token}` : token.startsWith(' ') ? token : ` ${token}`,
         start,
         end,
         confidence: Number(w.confidence ?? u.confidence ?? 0),
-        speaker,
+        speaker: resolved.speaker,
         utteranceIndex: u.source_utterance_index ?? ui,
-        sourceSpeakerId: w.speaker_id ?? w.speakerId ?? utteranceSpeakerId,
+        sourceSpeakerId: resolved.id,
         sourceWordIndex: w.source_word_index ?? wi,
         contested: diar.contested,
-        mapping,
-        source: anonymousLabel ? (mapping?.participant ? 'diarization' : 'unknown') : provided ? 'provider' : diar.speaker ? 'diarization' : 'unknown',
+        mapping: resolved.mapping,
+        source: resolved.source,
         wordTimed: true,
       });
     }
@@ -473,9 +469,6 @@ function flattenWords(
  * majority vote that could hand a short reply to the person speaking longest.
  */
 function buildSentences(words: WordUnit[], stats: Record<string, number>): TranscriptTurn[] {
-  const MAX_WORDS = 45;
-  const HARD_GAP = 4.0;
-
   const units: TranscriptTurn[] = [];
   let cur: WordUnit[] = [];
   let contested = 0;
@@ -508,13 +501,10 @@ function buildSentences(words: WordUnit[], stats: Record<string, number>): Trans
     const w = words[i];
     cur.push(w);
     const next = words[i + 1];
-    const gap = next && next.start !== null && w.end !== null ? next.start - w.end : 0;
-    const tooLong = cur.length >= MAX_WORDS;
-    const longSilence = gap >= HARD_GAP;
     const speakerTurn = next && (next.speaker !== w.speaker || next.sourceSpeakerId !== w.sourceSpeakerId || next.utteranceIndex !== w.utteranceIndex);
     // Punctuation is not a speaker boundary. Provider utterance and timestamp
     // boundaries are authoritative; punctuation only remains transcript text.
-    if (tooLong || longSilence || speakerTurn || !next) flush();
+    if (speakerTurn || !next) flush();
   }
   flush();
 
@@ -525,7 +515,7 @@ function buildSentences(words: WordUnit[], stats: Record<string, number>): Trans
   for (const turn of units) {
     if (turn.start_time === null || turn.end_time === null) continue;
     active = active.filter((u) => u.end_time! > turn.start_time!);
-    for (const other of active) if (other.speaker !== turn.speaker) { other.contested = true; turn.contested = true; }
+    for (const other of active) if (other.source_speaker_id !== turn.source_speaker_id) { other.contested = true; turn.contested = true; }
     active.push(turn);
   }
   contested = units.filter((u) => u.contested).length;
@@ -535,12 +525,12 @@ function buildSentences(words: WordUnit[], stats: Record<string, number>): Trans
 }
 
 /** Merge consecutive sentences by the same speaker into one readable turn. */
-function mergeTurns(units: TranscriptTurn[], stats: Record<string, number>, maxGap = 20): TranscriptTurn[] {
+function mergeTurns(units: TranscriptTurn[], stats: Record<string, number>, maxGap = 2): TranscriptTurn[] {
   const out: TranscriptTurn[] = [];
   for (const u of units) {
     const prev = out[out.length - 1];
     const sameEvidence = prev && (u.source_speaker_id != null || prev.source_speaker_id != null)
-      ? u.source_speaker_id != null && prev.source_speaker_id === u.source_speaker_id
+      ? u.source_speaker_id != null && u.source_speaker_id !== 'unknown' && prev.source_speaker_id === u.source_speaker_id
       : prev && prev.speaker_source === u.speaker_source && prev.speaker !== 'Unidentified Speaker';
     if (prev && prev.speaker === u.speaker && !prev.contested && !u.contested && sameEvidence &&
         u.start_time !== null && prev.end_time !== null &&
@@ -616,8 +606,8 @@ async function callGemini(prompt: string, label: string, temperature = 0.1): Pro
         );
 
         if (!res.ok) {
-          const body = scrub(await res.text()).slice(0, 200);
-          console.error(`[Gemini] ${label} model=${model} attempt=${attempt} HTTP ${res.status}: ${body}`);
+          await res.body?.cancel();
+          console.error(`[Gemini] ${label} model=${model} attempt=${attempt} HTTP ${res.status}`);
           if (res.status === 429 || res.status === 500 || res.status === 503) continue; // transient -> retry
           break; // permanent for this model -> next model
         }
@@ -758,8 +748,8 @@ async function analyzeTranscript(transcriptText: string, roster: string[], meeti
   let parsed: Record<string, any>;
   try {
     parsed = JSON.parse(cleanJsonResponse(raw));
-  } catch (err) {
-    console.error(`[Transcript Pipeline] could not parse summarisation JSON: ${scrub(err)}`);
+  } catch {
+    console.error('[Transcript Pipeline] could not parse summarisation JSON.');
     return null;
   }
 
@@ -869,10 +859,10 @@ export function coalesceRealtimeTranscriptSegments(events: unknown[]): Record<st
 
 function dedupeUtterances(utterances: Record<string, any>[], stats: Record<string, number>): Record<string, any>[] {
   const kept: Record<string, any>[] = [];
-  const seenIds = new Set<string>();
+  const seenUtterances = new Set<string>();
   const seenWords = new Set<string>();
-  const normalized = (u: Record<string, any>) => String(u.text ?? u.transcript ??
-    (Array.isArray(u.words) ? u.words.map((w: any) => w.word ?? w.text ?? '').join(' ') : '')).trim().replace(/\s+/g, ' ');
+  const originalText = (u: Record<string, any>) => String(u.text ?? u.transcript ??
+    (Array.isArray(u.words) ? u.words.map((w: any) => w.word ?? w.text ?? '').join(' ') : ''));
   const time = (u: Record<string, any>) => ({
     start: seconds(u.start ?? u.start_time), end: seconds(u.end ?? u.end_time),
   });
@@ -883,36 +873,25 @@ function dedupeUtterances(utterances: Record<string, any>[], stats: Record<strin
       continue;
     }
     const utterance: Record<string, any> = { ...raw, source_utterance_index: raw.source_utterance_index ?? sourceIndex };
-    const id = utterance.utterance_id ?? utterance.id ?? utterance.segment_id;
-    const identity = utterance.speaker_id ?? utterance.speaker ?? null;
-    const scopedId = JSON.stringify([identity, id]);
-    if (id !== undefined && id !== null && seenIds.has(scopedId)) {
-      stats.duplicateUtterancesRemoved = (stats.duplicateUtterancesRemoved ?? 0) + 1;
-      continue;
-    }
-    const text = normalized(utterance);
+    const identity = sourceSpeakerId(utterance);
+    const text = originalText(utterance);
     const current = time(utterance);
-    const duplicate = text && current.start !== null && current.end !== null && kept.some((prior) => {
-      const previous = time(prior);
-      const sameSpeaker = String(prior.speaker_id ?? prior.speaker ?? '') === String(utterance.speaker_id ?? utterance.speaker ?? '');
-      return sameSpeaker && previous.start !== null && previous.end !== null &&
-        Math.abs(current.start! - previous.start) < 0.001 && Math.abs(current.end! - previous.end) < 0.001 && normalized(prior) === text;
-    });
+    const key = JSON.stringify([identity,current.start,current.end,text,utterance.words ?? null]);
+    const duplicate = text && current.start !== null && current.end !== null && seenUtterances.has(key);
     if (duplicate) {
       stats.duplicateUtterancesRemoved = (stats.duplicateUtterancesRemoved ?? 0) + 1;
       continue;
     }
-    if (id !== undefined && id !== null) seenIds.add(scopedId);
+    seenUtterances.add(key);
     // Remove only exact timed word redeliveries from the same source speaker.
     // Repeated phrases at another time, or simultaneous speakers, are retained.
     const sourceWords = Array.isArray(utterance.words) ? utterance.words : [];
-    const wordText = sourceWords.map((w: any) => String(w.word ?? w.text ?? '')).join(' ').trim().replace(/\s+/g, ' ');
-    if (sourceWords.length && wordText === text) {
+    const wordText = sourceWords.map((w: any) => `${w.separator ?? ' '}${String(w.word ?? w.text ?? '')}`).join('').trim().replace(/\s+/g, ' ');
+    if (sourceWords.length && wordText === text.trim().replace(/\s+/g, ' ')) {
       const filtered = sourceWords.map((w: any, i: number) => ({ ...w, source_word_index: w.source_word_index ?? i })).filter((w: any) => {
         const start = seconds(w.start ?? w.start_time), end = seconds(w.end ?? w.end_time);
         if (start === null || end === null) return true;
-        const speaker = w.speaker_id ?? w.speaker ?? identity;
-        if (speaker === null || speaker === undefined || speaker === 'unknown') return true;
+        const speaker = sourceSpeakerId(utterance, w);
         const key = JSON.stringify([speaker,
           start, end, String(w.word ?? w.text ?? '')]);
         if (seenWords.has(key)) {
@@ -924,7 +903,7 @@ function dedupeUtterances(utterances: Record<string, any>[], stats: Record<strin
       });
       if (filtered.length !== sourceWords.length) {
         utterance.words = filtered;
-        utterance.text = filtered.map((w: any) => String(w.word ?? w.text ?? '')).join(' ');
+        utterance.text = filtered.map((w: any) => `${w.separator ?? ' '}${String(w.word ?? w.text ?? '')}`).join('').trim();
         if (!filtered.length) continue;
         utterance.start = filtered[0].start ?? filtered[0].start_time;
         utterance.end = filtered.at(-1).end ?? filtered.at(-1).end_time;
@@ -936,6 +915,7 @@ function dedupeUtterances(utterances: Record<string, any>[], stats: Record<strin
 }
 
 export async function assembleTranscript(data: Record<string, any>): Promise<AssemblyResult> {
+  const started = Date.now();
   const stats: Record<string, number> = {};
   const [transcriptionText, diarizationText, rawProviderText] = await Promise.all([
     typeof data.transcription === 'string' && data.transcription.startsWith('https://')
@@ -945,6 +925,13 @@ export async function assembleTranscript(data: Record<string, any>): Promise<Ass
     typeof data.raw_transcription === 'string' && data.raw_transcription.startsWith('https://')
       ? fetchSignedText(data.raw_transcription, 'raw transcription') : Promise.resolve(null),
   ]);
+  if (typeof data.raw_transcription === 'string' && data.raw_transcription.startsWith('https://') && rawProviderText === null)
+    throw new Error('Raw provider transcription artifact unavailable; retry completion.');
+  let rawProviderDoc: unknown = rawProviderText;
+  if (rawProviderText !== null) {
+    try { rawProviderDoc = JSON.parse(rawProviderText); }
+    catch { throw new Error('Invalid raw provider transcription JSON; retry completion.'); }
+  }
   let doc = data.transcription;
   if (typeof doc === 'string') {
     // An artifact outage is retryable, not a successful silent meeting.
@@ -959,6 +946,7 @@ export async function assembleTranscript(data: Record<string, any>): Promise<Ass
     extractUtterances(doc || data.transcript).filter((u) => u && typeof u === 'object'),
     stats,
   );
+  if (doc?.bot_id && data.bot_id && doc.bot_id !== data.bot_id) throw new Error('Transcription artifact bot ID mismatch.');
   const timeline = parseDiarizationTimeline(diarizationText);
   let registry = buildParticipantRegistry(data);
   const artifactNames = registry.names.length ? [] : [
@@ -979,17 +967,20 @@ export async function assembleTranscript(data: Record<string, any>): Promise<Ass
   const sentences = buildSentences(words, stats);
   console.log(`[Transcript Pipeline] segments before cleanup: ${utterances.length} -> sentences: ${stats.sentenceCount} (contested: ${stats.contestedSentences})`);
 
-  // Save deterministic content before any Gemini call. Attribution of unresolved
-  // identities is an optional later pass in handleCompletion.
+  // Finished deterministic content is the only input to Gemini analysis.
   const turns = mergeTurns(sentences, stats);
   const text = turnsToText(turns);
   console.log(`[Transcript Pipeline] segments after cleanup: ${stats.turnsAfterMerge}`);
   console.log(`[Transcript Pipeline] word conservation: source=${sourceWordCount} final=${countWords(turns.map((t) => t.text).join(' '))}`);
+  pipelineLog('transcript_assembly', data.meeting_id ?? null, data.bot_id ?? null, {
+    duration_ms: Date.now()-started, ...stats, sourceWordCount,
+    finalWordCount: countWords(turns.map((t) => t.text).join(' ')), http_status: 200,
+  });
 
   const reported = data.transcription_provider ?? doc?.provider;
   return { turns, text, registry, stats, sourceWordCount,
     provider: typeof reported === 'string' && STT_PROVIDERS.has(reported.toLowerCase()) ? reported.toLowerCase() : null,
-    rawTranscription: rawProviderText ?? data.raw_transcription ?? doc ?? data.transcript ?? null,
+    rawTranscription: rawProviderDoc ?? data.raw_transcription ?? doc ?? data.transcript ?? null,
     rawDiarization: typeof data.raw_diarization === 'string' ? data.raw_diarization : diarizationText,
     standardizedTranscription: doc ?? data.transcript ?? null,
     transcriptionArtifactText: transcriptionText,
@@ -1153,16 +1144,17 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
     return json({ success: true, ignored: 'unsupported event' }, 200);
   const data = body?.data ?? body;
   const botId = String(body?.bot_id || data?.bot_id || body?.bot?.id || body?.id || '').trim();
+  if (body.bot_id && data.bot_id && body.bot_id !== data.bot_id) return json({ success: false, error: 'Conflicting bot IDs.' }, 409);
 
   console.log(`[Webhook] T+0ms event=${eventType} bot_id=${botId || '<none>'}`);
 
   if (!botId) {
     console.warn('[Webhook] payload missing bot_id — cannot correlate to a meeting');
-    return json({ success: true, ignored: 'missing bot_id' }, 200);
+    return json({ success: false, error: 'Missing bot_id.' }, 400);
   }
 
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co';
-  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY');
+  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
     console.error('[Webhook] Supabase service role is not configured — cannot persist.');
     return json({ success: false, error: 'Server not configured' }, 503);
@@ -1174,12 +1166,15 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
 
   const { data: existing, error: lookupError } = await supabaseAdmin
     .from('meetings')
-    .select('id, status, summary, transcript, transcription_provider, processing_stage, ended_at, raw_payload, updated_at, recording_status')
+    .select('id, status, summary, transcript, transcription_provider, processing_stage, ended_at, raw_payload, updated_at, recording_status, recording_metadata')
     .eq('bot_id', botId)
     .maybeSingle();
   // A very fast bot can callback before deploy-bot inserts its owned row. Retry
   // instead of inserting an ownerless meeting or acknowledging a lost update.
-  if (lookupError || !existing) return json({ success: false, error: 'Meeting lookup unavailable; retry delivery.' }, 503);
+  if (lookupError || !existing) {
+    pipelineLog('webhook_meeting_missing', null, botId, { http_status: 503, retry: true });
+    return json({ success: false, error: 'Meeting lookup unavailable; retry delivery.' }, 503);
+  }
 
   try {
     const isCompletion = eventType === 'bot.completed' || eventType === 'complete';
@@ -1189,12 +1184,15 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       // Finalize video metadata independently, even on a late/duplicate
       // completion whose transcription and summary are already saved.
       if (existing.recording_status !== 'expired' &&
-          (videoUrl(data) || data.artifacts_deleted || data.data_deleted || existing.recording_status !== 'ready'))
-        await saveRecording(supabaseAdmin, existing.id, botId, recordingPatch({ ...data, bot_id: botId }, 'completed'));
+          (videoUrl(data) || data.artifacts_deleted || data.data_deleted || existing.recording_status !== 'ready')) {
+        const patch = recordingPatch({ ...data, bot_id: botId }, 'completed');
+        if (existing.recording_metadata?.artifact === patch.recording_metadata.artifact)
+          patch.recording_metadata = { ...existing.recording_metadata, ...patch.recording_metadata };
+        await saveRecording(supabaseAdmin, existing.id, botId, patch);
+      }
       const alreadyHasContent =
         existing?.status === 'summarized' ||
-        (existing?.status === 'completed' && (existing?.summary || existing?.transcript) &&
-          existing.processing_stage !== 'processing_failed');
+        (existing?.status === 'completed' && existing.processing_stage === 'completed');
       if (alreadyHasContent) {
         return json({ success: true, event: eventType, bot_id: botId, duplicate: true, status: existing.status }, 200);
       }
@@ -1202,7 +1200,7 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       // reroute an older recording. ElevenLabs consumes the recorded audio.
       const provider = data.extra?.revora?.transcription_provider || body.extra?.revora?.transcription_provider || existing.transcription_provider;
       if (provider === 'elevenlabs') {
-        const queued = await queueElevenLabsTranscription(supabaseAdmin, existing, { ...data,
+        const queued = await queueElevenLabsTranscription(supabaseAdmin, existing, { ...data, bot_id: botId,
           raw_meetingbaas_payload: body,
           bot_name: data.bot_name ?? data.extra?.revora?.bot_name ?? body.extra?.revora?.bot_name,
           extra: data.extra ?? body.extra });
@@ -1212,7 +1210,9 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
     }
 
     if (isFailure) {
-      if (existing?.status === 'summarized' || (existing?.status === 'completed' && existing?.transcript)) {
+      if (existing?.status === 'summarized' || (existing?.status === 'completed' && existing?.transcript) ||
+          (existing.ended_at && existing.transcription_provider === 'elevenlabs' &&
+            ['transcript_processing','transcript_ready','summary_processing'].includes(existing.processing_stage))) {
         return json({ success: true, event: eventType, bot_id: botId, duplicate: true }, 200);
       }
       const code = data?.error_code ? ` [${data.error_code}]` : '';
@@ -1221,9 +1221,10 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       await updateMeetingByBotId(supabaseAdmin, botId, {
         status: 'failed',
         processing_stage: 'processing_failed',
-        error_message: message,
+        error_message: scrub(message),
+        recording_status: existing.recording_status === 'expired' ? 'expired' : existing.recording_status === 'ready' ? 'ready' : 'failed',
         ended_at: new Date().toISOString(),
-        raw_payload: body,
+        raw_payload: meetingEventMetadata(body),
       });
       return json({ success: true, event: eventType, bot_id: botId, status: 'failed' }, 200);
     }
@@ -1245,6 +1246,7 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       const processing = ['transcript_processing', 'transcript_ready', 'summary_processing'].includes(existing.processing_stage);
       if ((Number.isFinite(previousAt) && Number.isFinite(incomingAt) && incomingAt <= previousAt) ||
           (activeStage && (existing.ended_at || processing)) ||
+          (mapped.status === 'failed' && existing.ended_at && processing && existing.transcription_provider === 'elevenlabs') ||
           (mapped.processing_stage === 'bot_dispatched' && existing.status === 'recording'))
         return json({ success: true, ignored: 'stale status event' }, 200);
       if (mapped.processing_stage === 'meeting_ended') {
@@ -1258,7 +1260,7 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       // completion. A retry will see the newer row and apply the ordering guard.
       const videoState = recordingPatch({ ...data, bot_id: botId });
       let query = supabaseAdmin.from('meetings').update({ ...mapped,
-        ...(!['ready', 'expired'].includes(existing.recording_status) ? { recording_status: videoState.recording_status } : {}), raw_payload: body })
+        ...(!['ready', 'expired'].includes(existing.recording_status) ? { recording_status: videoState.recording_status } : {}), raw_payload: meetingEventMetadata(body) })
         .eq('bot_id', botId).in('status', ['pending', 'recording']);
       if (existing.updated_at) query = query.eq('updated_at', existing.updated_at);
       const saved = await query.select('id').maybeSingle();
@@ -1270,80 +1272,23 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       console.log(`[Webhook] Ignoring status_change (${mapped.status}/${mapped.processing_stage}) — meeting already ${existing.status}.`);
     }
     return json({ success: true, event: eventType, bot_id: botId, status: existing?.status ?? 'unchanged' }, 200);
-  } catch (err) {
-    console.error('[Webhook] processing error:', scrub(err));
+  } catch {
+    pipelineLog('webhook_failed', existing.id, botId, { duration_ms: Date.now()-t0, http_status: 503 });
+    const failed = await supabaseAdmin.from('meetings').update({ processing_stage: 'processing_failed',
+      error_message: 'Meeting processing failed; retry delivery or reprocess the archived result.' })
+      .eq('id', existing.id).eq('bot_id', botId).neq('status', 'summarized');
+    if (failed.error) pipelineLog('failure_state_save_failed', existing.id, botId, { http_status: 503 });
     return json({ success: false, error: 'Processing error; retry delivery.' }, 503);
   }
 }
 
-// Columns added by migration 0004. If the migration has not been applied yet we
-// retry without them rather than losing the whole transcript write.
-const OPTIONAL_COLUMNS = [
-  'processing_stage', 'transcript_segments', 'transcription_provider', 'transcript_metrics',
-  'raw_transcription', 'raw_diarization', 'transcript_source_metadata',
-];
-
-/**
- * @param skipTranscriptGuard  When true, skip the pre-read SELECT that checks
- *   transcript length. Status-only updates (bot.status_change) don't touch the
- *   transcript column and don't need the extra round-trip — saving ~0.5-1s.
- */
 async function updateMeetingByBotId(
   supabaseAdmin: any,
   botId: string,
   patch: Record<string, any>,
-  skipTranscriptGuard = false,
 ): Promise<any | null> {
-  let existing: Record<string, any> | null = null;
-
-  if (!skipTranscriptGuard) {
-    const { data } = await supabaseAdmin
-      .from('meetings')
-      .select('id, transcript, status, summary')
-      .eq('bot_id', botId)
-      .maybeSingle();
-    existing = data;
-
-    // Never let a shorter re-delivery clobber a longer transcript we already have.
-    if (existing && patch.transcript !== undefined && existing.transcript) {
-      const existingText = String(existing.transcript).trim();
-      const newText = String(patch.transcript || '').trim();
-      if (newText.length < existingText.length && patch.transcript_source_metadata?.normalization_version !== 2) {
-        console.log(`[Webhook] Preserving existing longer transcript (${existingText.length} chars vs ${newText.length} chars)`);
-        patch.transcript = existing.transcript;
-        // Never combine an older text blob with new structured speaker turns.
-        delete patch.transcript_segments;
-      }
-    }
-  }
-
-  // Try update first (the common path); fall back to insert if no row matched.
-  const write = async (p: Record<string, any>) => {
-    const { data: updated, error: updateErr } = await supabaseAdmin
-      .from('meetings')
-      .update(p)
-      .eq('bot_id', botId)
-      .select()
-      .maybeSingle();
-    if (updated) return { data: updated, error: null };
-    if (updateErr && updateErr.code !== 'PGRST116') return { data: null, error: updateErr };
-    // No row matched — insert instead.
-    return await supabaseAdmin
-      .from('meetings')
-      .insert({ bot_id: botId, ...p })
-      .select()
-      .maybeSingle();
-  };
-
-  let { data: saved, error } = await write(patch);
-
-  if (missingSchema(error)) {
-    const fallback = { ...patch };
-    for (const c of OPTIONAL_COLUMNS) delete fallback[c];
-    console.warn(`[Webhook] meetings update rejected an optional column (${error.message}) — retrying without ${OPTIONAL_COLUMNS.join('/')}. Apply migration 0004.`);
-    ({ data: saved, error } = await write(fallback));
-  }
-
+  const { data: saved, error } = await supabaseAdmin.from('meetings').update(patch).eq('bot_id', botId).select().maybeSingle();
+  if (!saved) pipelineLog('meeting_update_missing', null, botId, { http_status: 503 });
   if (error || !saved) throw new Error(`Meeting persistence failed (${error?.code || 'no_row'}).`);
   return saved ?? null;
 }
@@ -1366,14 +1311,40 @@ export async function handleCompletion(
   botId: string,
   knownMeetingId: string | null,
   knownEndedAt?: string | null,
+  reprocess = false,
 ): Promise<Response> {
+  if (!knownMeetingId || (data.bot_id && data.bot_id !== botId)) throw new Error('Meeting/bot mismatch.');
+  const token = crypto.randomUUID();
+  const claim = await supabaseAdmin.rpc('claim_meeting_transcript', {
+    p_meeting_id: knownMeetingId, p_bot_id: botId, p_token: token, p_reprocess: reprocess,
+  });
+  if (claim.error) {
+    pipelineLog('transcript_lease_failed', knownMeetingId, botId, { http_status: 503, database_code: claim.error.code });
+    throw new Error('Transcript lease unavailable; apply the pipeline integrity migration.');
+  }
+  if (claim.data !== 'claimed') return json({ success: true, duplicate: true, status: claim.data }, claim.data === 'processing' ? 202 : 200);
+  try {
+    return await runCompletion(supabaseAdmin, body, { ...data, bot_id: botId, meeting_id: knownMeetingId }, botId, knownMeetingId, token, knownEndedAt);
+  } catch (error) {
+    const failed = await supabaseAdmin.from('meetings').update({ processing_stage: 'processing_failed',
+      error_message: 'Transcript/analysis processing failed. The archived source can be reprocessed.' })
+      .eq('id', knownMeetingId).eq('bot_id', botId).eq('transcript_processing_token', token);
+    if (failed.error) pipelineLog('failure_state_save_failed', knownMeetingId, botId, { http_status: 503 });
+    throw error;
+  } finally {
+    const released = await supabaseAdmin.from('meetings').update({ transcript_processing_token: null, transcript_processing_at: null })
+      .eq('id', knownMeetingId).eq('bot_id', botId).eq('transcript_processing_token', token);
+    if (released.error) pipelineLog('transcript_lease_release_failed', knownMeetingId, botId, { http_status: 503 });
+  }
+}
+
+async function runCompletion(supabaseAdmin: any, body: Record<string, any>, data: Record<string, any>,
+  botId: string, knownMeetingId: string, token: string, knownEndedAt?: string | null): Promise<Response> {
   console.log(`[Transcript Pipeline] MeetingBaaS meeting/bot id: ${botId}`);
 
-  const recording = videoUrl(data);
   const validDate = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
   const endedAt = validDate(data.exited_at) || knownEndedAt || new Date().toISOString();
   const joinedAt = validDate(data.joined_at);
-  console.log(`[Transcript Pipeline] recording available: ${recording ? 'yes' : 'no'}`);
   console.log(`[Transcript Pipeline] transcription artifact available: ${data?.transcription ? 'yes' : 'no'}`);
   console.log(`[Transcript Pipeline] diarization artifact available: ${data?.diarization ? 'yes' : 'no'}`);
 
@@ -1383,8 +1354,7 @@ export async function handleCompletion(
   await updateMeetingByBotId(supabaseAdmin, botId, {
     status: 'recording',
     processing_stage: 'transcript_processing',
-    ...(recording ? { recording_url: recording } : {}),
-    raw_payload: data.raw_meetingbaas_payload ?? body,
+    raw_payload: meetingEventMetadata(data.raw_meetingbaas_payload ?? body),
   });
 
   const assembled = await assembleTranscript({ ...data,
@@ -1392,22 +1362,35 @@ export async function handleCompletion(
   const sourceHash = await preserveTranscriptSource(supabaseAdmin, knownMeetingId, data.raw_meetingbaas_payload ?? body, assembled);
   const meetingISO = meetingDateISO(data);
 
+  const transcriptMetrics = { ...assembled.stats, sourceWordCount: assembled.sourceWordCount,
+    finalWordCount: countWords(assembled.turns.map((t) => t.text).join(' ')),
+    ...(data.transcription_model ? { model: data.transcription_model } : {}) };
+  const persisted = await supabaseAdmin.rpc('persist_meeting_transcript', {
+    p_meeting_id: knownMeetingId, p_bot_id: botId, p_token: token, p_turns: assembled.turns,
+    p_patch: { transcription_provider: assembled.provider, transcript_metrics: transcriptMetrics,
+      duration_secs: durationSecs, ended_at: endedAt, ...(joinedAt ? { started_at: joinedAt } : {}),
+      transcript_source_metadata: { provider: assembled.provider, model: data.transcription_model ?? null,
+        normalization_version: 3, source_hash: sourceHash, speaker_mapping: 'whole_cluster_timeline_evidence',
+        source_utterance_count: assembled.stats.sourceUtteranceCount ?? 0,
+        duplicate_utterances_removed: assembled.stats.duplicateUtterancesRemoved ?? 0, partial_events_persisted: 0 } },
+  });
+  if (persisted.error || persisted.data !== knownMeetingId) {
+    pipelineLog('transcript_persistence_failed', knownMeetingId, botId, { http_status: 503, database_code: persisted.error?.code });
+    throw new Error('Atomic transcript persistence failed.');
+  }
+  const meetingId = knownMeetingId;
+
   // No speech / no transcript: finish honestly. Never fabricate content.
   if (assembled.turns.length === 0) {
     console.warn('[Transcript Pipeline] MeetingBaaS returned no transcript content — nothing to summarise.');
     const meeting = await updateMeetingByBotId(supabaseAdmin, botId, {
       status: 'completed',
       processing_stage: 'completed',
-      ...(recording ? { recording_url: recording } : {}),
       duration_secs: durationSecs,
       ended_at: endedAt,
       ...(joinedAt ? { started_at: joinedAt } : {}),
-      raw_transcription: assembled.rawTranscription,
-      raw_diarization: assembled.rawDiarization,
-      transcript_source_metadata: { provider: assembled.provider, model: data.transcription_model ?? null,
-        normalization_version: 2, source_hash: sourceHash },
       error_message: 'Meeting ended, but no transcript content was produced (no speech detected or transcription unavailable).',
-      raw_payload: data.raw_meetingbaas_payload ?? body,
+      raw_payload: meetingEventMetadata(data.raw_meetingbaas_payload ?? body),
     });
     return json(
       { success: true, event: 'bot.completed', bot_id: botId, status: 'completed', transcript: false, meeting_id: meeting?.id ?? knownMeetingId },
@@ -1415,49 +1398,12 @@ export async function handleCompletion(
     );
   }
 
-  // STEP 8: the transcript is complete before anything is summarised, and it is
-  // persisted first so a Gemini failure can never cost us the transcript.
-  // Use the provider reported for THIS recording, not today's environment setting.
-  const sttProvider = assembled.provider;
-  const transcriptMetrics = {
-    ...assembled.stats,
-    sourceWordCount: assembled.sourceWordCount,
-    finalWordCount: countWords(assembled.turns.map((t) => t.text).join(' ')),
-    ...(data.transcription_model ? { model: data.transcription_model } : {}),
-  };
-
-  const transcriptSaved = await updateMeetingByBotId(supabaseAdmin, botId, {
-    status: 'completed',
-    processing_stage: 'transcript_ready',
-    transcript: assembled.text,
-    transcript_segments: assembled.turns,
-    transcription_provider: sttProvider,
-    transcript_metrics: transcriptMetrics,
-    ...(recording ? { recording_url: recording } : {}),
-    duration_secs: durationSecs,
-    ended_at: endedAt,
-    ...(joinedAt ? { started_at: joinedAt } : {}),
-    error_message: null,
-    raw_payload: data.raw_meetingbaas_payload ?? body,
-    raw_transcription: assembled.rawTranscription,
-    raw_diarization: assembled.rawDiarization,
-    transcript_source_metadata: {
-      provider: sttProvider,
-      model: data.transcription_model ?? null,
-      normalization_version: 2,
-      source_hash: sourceHash,
-      speaker_mapping: sttProvider === 'elevenlabs' ? 'acoustic_cluster_timeline_evidence' : 'provider_identity',
-      source_utterance_count: assembled.stats.sourceUtteranceCount ?? 0,
-      duplicate_utterances_removed: assembled.stats.duplicateUtterancesRemoved ?? 0,
-      partial_events_persisted: 0,
-    },
-  });
-  const meetingId = transcriptSaved?.id ?? knownMeetingId;
-  await replaceTranscriptRows(supabaseAdmin, meetingId, assembled.turns);
-
   await updateMeetingByBotId(supabaseAdmin, botId, { processing_stage: 'summary_processing' });
   const openTasks = await loadCarryoverTasks(supabaseAdmin, meetingId);
+  const analysisStarted = Date.now();
   const analysis = await analyzeTranscript(assembled.text, assembled.registry.names, meetingISO, openTasks);
+  pipelineLog('gemini_analysis', meetingId, botId, { duration_ms: Date.now()-analysisStarted,
+    http_status: analysis ? 200 : 503, action_items: analysis?.action_items.length ?? 0 });
 
   if (!analysis) {
     console.warn('[Transcript Pipeline] summarisation failed — complete transcript remains saved and visible.');
@@ -1467,8 +1413,8 @@ export async function handleCompletion(
       error_message: 'Transcript captured, but AI summarization failed (transcript preserved).',
     });
     return json(
-      { success: true, event: 'bot.completed', bot_id: botId, status: 'completed', summarized: false, meeting_id: meetingId, metrics: assembled.stats },
-      200,
+      { success: false, event: 'bot.completed', bot_id: botId, status: 'processing_failed', summarized: false, meeting_id: meetingId },
+      503,
     );
   }
 
@@ -1508,23 +1454,6 @@ export async function handleCompletion(
 // Persistence helpers
 // --------------------------------------------------------------------
 
-/** Replace (not append) the per-turn transcript rows so re-delivery can't duplicate them. */
-async function replaceTranscriptRows(supabaseAdmin: any, meetingId: string | null, turns: TranscriptTurn[]): Promise<void> {
-  if (!meetingId || turns.length === 0) return;
-
-  const { error: delError } = await supabaseAdmin.from('transcripts').delete().eq('meeting_id', meetingId);
-  if (delError) throw new Error(`Transcript replacement failed (${delError.code || 'database_error'}).`);
-
-  const rows = turns.map((t, i) => ({ meeting_id: meetingId, speaker: t.speaker, text: t.text,
-    segment_index: i, start_time: t.start_time, end_time: t.end_time }));
-  let { error } = await supabaseAdmin.from('transcripts').insert(rows);
-  if (missingSchema(error)) {
-    ({ error } = await supabaseAdmin.from('transcripts').insert(rows.map(({ segment_index: _i, start_time: _s, end_time: _e, ...row }) => row)));
-  }
-  if (error) throw new Error(`Transcript persistence failed (${error.code || 'database_error'}).`);
-  console.log(`[Transcript Pipeline] Supabase save: ${rows.length} transcript row(s) persisted.`);
-}
-
 async function persistAnalysis(supabaseAdmin: any, meetingId: string, analysis: AIAnalysis): Promise<void> {
   // 5.4 — Idempotency: delete existing summaries before inserting, mirroring
   // the pattern already used for action_items. Prevents duplicate rows on
@@ -1545,12 +1474,22 @@ async function persistAnalysis(supabaseAdmin: any, meetingId: string, analysis: 
   }
   if (summaryError) throw new Error(`Summary persistence failed (${summaryError.code || 'database_error'}).`);
 
-  if (await persistContextTasks(supabaseAdmin, meetingId, analysis.action_items, analysis.task_updates)) return;
-
-  if (analysis.action_items.length === 0) {
-    console.log('[Transcript Pipeline] Supabase save: summary stored, no action items to store.');
-    return;
-  }
+  // Keep the existing context task behavior, while surfacing its logged-and-
+  // swallowed RPC failures to this pipeline instead of publishing silent success.
+  let taskPersistenceError: unknown = null;
+  const taskAdmin = {
+    from: (table: string) => supabaseAdmin.from(table),
+    rpc: async (name: string, args: unknown) => {
+      try {
+        const result = await supabaseAdmin.rpc(name, args);
+        taskPersistenceError = result.error;
+        return result;
+      } catch (error) { taskPersistenceError = error; throw error; }
+    },
+  };
+  const contextHandled = await persistContextTasks(taskAdmin, meetingId, analysis.action_items, analysis.task_updates);
+  if (contextHandled && taskPersistenceError) throw new Error('Action item persistence failed; existing context tasks were retained.');
+  if (contextHandled) return;
 
   const rows = analysis.action_items.map((a) => ({
     meeting_id: meetingId,
@@ -1562,13 +1501,14 @@ async function persistAnalysis(supabaseAdmin: any, meetingId: string, analysis: 
   }));
 
   const { error: delError } = await supabaseAdmin.from('action_items').delete().eq('meeting_id', meetingId);
-  if (delError) console.error(`[Webhook] action_items cleanup failed (${delError.code}): ${delError.message}`);
+  if (delError) throw new Error('Action item replacement failed.');
+  if (!rows.length) return;
 
   let { error } = await supabaseAdmin.from('action_items').insert(rows);
   if (error && (error.code === '42703' || /column .* does not exist/i.test(error.message ?? ''))) {
     console.warn('[Webhook] action_items.due_day missing — retrying without it. Apply migration 0004.');
     ({ error } = await supabaseAdmin.from('action_items').insert(rows.map(({ due_day: _d, ...r }) => r)));
   }
-  if (error) console.error(`[Webhook] action_items insert failed (${error.code}): ${error.message}`);
+  if (error) throw new Error('Action item persistence failed.');
   else console.log(`[Transcript Pipeline] Supabase save: summary + ${rows.length} action item(s) persisted.`);
 }

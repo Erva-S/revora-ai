@@ -1,5 +1,6 @@
 import { ContextError, requireDb, UUID } from './context-utils.ts';
 import { recordingUrl, sanitizeKey } from './meetingbaas.ts';
+import { meetingEventMetadata, pipelineLog } from './pipeline-log.ts';
 
 export function elevenLabsConfig() {
   const apiKey = sanitizeKey(Deno.env.get('ELEVENLABS_API_KEY'));
@@ -32,7 +33,7 @@ export async function verifyElevenLabsRequest(req: Request, rawBody: string): Pr
 }
 
 export class ElevenLabsSubmissionError extends ContextError {
-  constructor(message: string, public ambiguous: boolean) { super(message, 503); }
+  constructor(message: string, public ambiguous: boolean, public providerStatus = 503) { super(message, 503); }
 }
 
 export async function submitElevenLabsTranscription(audioUrl: string, jobId: string, model: string): Promise<string> {
@@ -59,7 +60,7 @@ export async function submitElevenLabsTranscription(audioUrl: string, jobId: str
   }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new ElevenLabsSubmissionError(`ElevenLabs rejected transcription: HTTP ${response.status}.`, response.status >= 500);
+    throw new ElevenLabsSubmissionError(`ElevenLabs rejected transcription: HTTP ${response.status}.`, response.status >= 500, response.status);
   }
   let result: any;
   try { result = await response.json(); } catch { /* response may be lost after acceptance */ }
@@ -87,7 +88,9 @@ export function elevenLabsTranscription(result: any) {
     if (!labels.has(id)) labels.set(id, `Speaker ${labels.size + 1}`);
     const gap = current?.words.length && typeof word.start === 'number' && typeof current.words.at(-1)?.end === 'number'
       ? word.start - current.words.at(-1).end : 0;
-    if (!current || current.cluster !== id || gap > 2) {
+    // Ordinary pauses remain within the same speaker's utterance. A long silence
+    // is a timing boundary; punctuation is never a boundary.
+    if (!current || current.cluster !== id || gap >= 10) {
       current = { cluster: id, speaker_id: id, speaker: 'unknown', anonymous_speaker_label: labels.get(id), text: '', words: [] };
       utterances.push(current);
     }
@@ -109,10 +112,14 @@ export function elevenLabsTranscription(result: any) {
 
 /** Queue a recording exactly once; store attendance/diarization before URLs expire. */
 export async function queueElevenLabsTranscription(admin: any, meeting: any, data: Record<string, any>) {
+  const started = Date.now();
   const existing = await admin.from('meeting_transcription_jobs').select('*').eq('meeting_id', meeting.id).maybeSingle();
   requireDb(existing.error, 'Transcription job lookup (apply the ElevenLabs migration)');
-  if (existing.data && !(existing.data.status === 'failed' && !existing.data.request_id && !existing.data.result))
+  if (existing.data && !(existing.data.status === 'failed' && !existing.data.request_id && !existing.data.result)) {
+    if (['submitting','submission_unknown','failed'].includes(existing.data.status))
+      throw new ContextError('Transcription submission requires recovery; no second request was sent.', 503);
     return { job_id: existing.data.id, status: existing.data.status, duplicate: true };
+  }
   const config = elevenLabsConfig();
   const model = data.extra?.revora?.transcription_model || config.model;
   if (!['scribe_v2', 'scribe_v1'].includes(model)) throw new ContextError('Invalid model recorded for this bot.');
@@ -126,14 +133,15 @@ export async function queueElevenLabsTranscription(admin: any, meeting: any, dat
     try {
       const response = await fetch(data.diarization, { signal: AbortSignal.timeout(5000) });
       if (response.ok) diarization = await response.text();
-      else await response.body?.cancel();
-    } catch { /* Scribe's numbered speakers remain available without named diarization. */ }
+      else { pipelineLog('diarization_fetch', meeting.id, data.bot_id, { http_status: response.status }); await response.body?.cancel(); }
+    } catch { pipelineLog('diarization_fetch', meeting.id, data.bot_id, { http_status: 502 }); }
   }
   const job = { id: existing.data?.id || crypto.randomUUID(), meeting_id: meeting.id, model, status: 'submitting',
     input_payload: { ...data, raw_meetingbaas_payload: data.raw_meetingbaas_payload ?? { event: 'bot.completed', data },
       diarization, transcription_provider: 'elevenlabs' }, error_message: null, updated_at: new Date().toISOString() };
   const inserted = existing.data
-    ? await admin.from('meeting_transcription_jobs').update(job).eq('id', job.id).eq('status', 'failed').select().maybeSingle()
+    ? await admin.from('meeting_transcription_jobs').update(job).eq('id', job.id).eq('status', 'failed')
+      .is('request_id', null).is('result', null).select().maybeSingle()
     : await admin.from('meeting_transcription_jobs').insert(job).select().maybeSingle();
   if (inserted.error?.code === '23505' || (!inserted.error && !inserted.data))
     return { status: 'queued', duplicate: true };
@@ -143,7 +151,7 @@ export async function queueElevenLabsTranscription(admin: any, meeting: any, dat
     // Only the job owner changes meeting state. A racing duplicate cannot move
     // an already processed meeting back to recording.
     const savedMeeting = await admin.from('meetings').update({ status: 'recording', processing_stage: 'transcript_processing',
-      transcription_provider: 'elevenlabs', ended_at: end, raw_payload: { event: 'bot.completed', data },
+      transcription_provider: 'elevenlabs', ended_at: end, raw_payload: meetingEventMetadata({ event: 'bot.completed', data }),
       error_message: null })
       .eq('id', meeting.id).in('status', ['pending', 'recording', 'failed']);
     requireDb(savedMeeting.error, 'Recording persistence');
@@ -153,15 +161,19 @@ export async function queueElevenLabsTranscription(admin: any, meeting: any, dat
     const saved = await admin.from('meeting_transcription_jobs').update({ request_id: requestId, status: 'queued',
       updated_at: new Date().toISOString() }).eq('id', job.id).eq('status', 'submitting');
     requireDb(saved.error, 'Transcription request persistence');
+    pipelineLog('stt_submission', meeting.id, data.bot_id, { duration_ms: Date.now()-started, job_id: job.id, http_status: 202 });
     return { job_id: job.id, status: 'queued' };
   } catch (error) {
     const message = error instanceof ContextError ? error.message : 'Transcription submission failed.';
     const ambiguous = error instanceof ElevenLabsSubmissionError ? error.ambiguous : submissionAttempted;
     const status = ambiguous ? 'submission_unknown' : 'failed';
     // Never overwrite a result that arrived while the submission response was lost.
-    await admin.from('meeting_transcription_jobs').update({ status, error_message: message, updated_at: new Date().toISOString() })
+    const jobFailure = await admin.from('meeting_transcription_jobs').update({ status, error_message: message, updated_at: new Date().toISOString() })
       .eq('id', job.id).eq('status', 'submitting');
-    await admin.from('meetings').update({ error_message: message }).eq('id', meeting.id).eq('status', 'recording');
+    const meetingFailure = await admin.from('meetings').update({ processing_stage: 'processing_failed', error_message: message }).eq('id', meeting.id).eq('status', 'recording');
+    pipelineLog('stt_submission_failed', meeting.id, data.bot_id, { duration_ms: Date.now()-started, job_id: job.id,
+      http_status: error instanceof ElevenLabsSubmissionError ? error.providerStatus : 503,
+      response_http_status: 503, status, state_saved: !jobFailure.error && !meetingFailure.error });
     throw error;
   }
 }

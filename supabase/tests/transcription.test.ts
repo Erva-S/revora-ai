@@ -42,10 +42,10 @@ Deno.test('unresolved identity uses only unambiguous contemporaneous diarization
   const unknown = utterance('unknown', 'A useful technical discussion.', 1);
   const spans = [{ speaker: 'Alice', start_time: 0, end_time: 10 }, { speaker: 'Bob', start_time: 0, end_time: 10 }];
   const ambiguous = await assembleTranscript({ ...input([unknown]), diarization: spans.map((s) => JSON.stringify(s)).join('\n') });
-  assert.equal(ambiguous.turns[0].speaker, 'Unidentified Speaker');
+  assert.equal(ambiguous.turns[0].speaker, 'Speaker 1');
   const single = await assembleTranscript({ ...input([unknown]), diarization: JSON.stringify(spans[1]) });
-  assert.equal(single.turns[0].speaker, 'Bob');
-  assert.equal(single.turns[0].speaker_source, 'diarization');
+  assert.equal(single.turns[0].speaker, 'Speaker 1');
+  assert.equal(single.turns[0].speaker_source, 'unknown');
 });
 
 Deno.test('short/partial word-list transcript keeps every name and does not invent timings', async () => {
@@ -91,4 +91,8 @@ Deno.test('lifecycle mappings distinguish recording initialization/failure from 
   assert.equal(map('recording_succeeded')?.processing_stage, 'transcript_processing');
   assert.equal(map('call_ended')?.ended_at, '2026-10-04T10:00:00Z');
   assert.equal(map('participant_left'), null);
+});
+
+Deno.test('provider artifact for another bot is rejected before transcript assembly',async()=>{
+  await assert.rejects(assembleTranscript({bot_id:'bot-A',transcription:{bot_id:'bot-B',result:{utterances:[]}}}),/bot ID mismatch/);
 });

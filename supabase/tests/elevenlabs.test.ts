@@ -3,6 +3,7 @@ import { elevenLabsTranscription, submitElevenLabsTranscription, verifyElevenLab
 import { assembleTranscript, handleMeetingBaasWebhook } from '../functions/_shared/meeting-pipeline.ts';
 import { handleElevenLabsWebhook } from '../functions/elevenlabs-webhook/index.ts';
 import { handleProcessElevenLabsTranscription } from '../functions/process-elevenlabs-transcription/index.ts';
+import { pipelineRpc } from './pipeline-fakes.ts';
 
 const meetingId='00000000-0000-4000-8000-000000000001';
 const botId='00000000-0000-4000-8000-000000000002';
@@ -82,6 +83,11 @@ function fixture() {
     if(url.pathname.includes('/auth/v1/user'))return Response.json({id:meetingId,aud:'authenticated',created_at:'2026-01-01',app_metadata:{},user_metadata:{}});
     if(url.pathname.endsWith('/profiles'))return Response.json({role:state.role||'user'});
     const body=init?.body?JSON.parse(String(init.body)):null;
+    if(url.pathname.endsWith('/rpc/persist_meeting_transcript') && state.failTranscript)
+      return Response.json({code:'OUTAGE'},{status:503});
+    const rpc=pipelineRpc(url.pathname,body,state.meeting,(rows)=>{state.transcripts=rows;});if(rpc)return rpc;
+    if(url.hostname==='generativelanguage.googleapis.com')return Response.json({candidates:[{content:{parts:[{text:JSON.stringify({executive_summary:'A short discussion.',action_items:[]})}]}}]});
+    if(url.pathname.endsWith('/summaries')||url.pathname.endsWith('/rpc/context_persist_action_items'))return new Response(null,{status:204});
     if(url.pathname.endsWith('/meeting_transcript_sources')) {
       if(!state.sources.some((s:any)=>s.content_hash===body.content_hash))state.sources.push(body);
       return new Response(null,{status:201});
@@ -135,7 +141,8 @@ Deno.test('Scribe clusters preserve separate speakers without treating acoustic 
   assert.throws(()=>elevenLabsTranscription({text:'Broken result'}),/Invalid/);
 }));
 
-Deno.test('recording callback queues once; signed async result preserves named speakers, video, timestamps and model',()=>environment(async()=>{
+Deno.test('recording callback queues once; signed async result preserves stable clusters, video, timestamps and model',()=>environment(async()=>{
+  Deno.env.set('GEMINI_API_KEY','test-gemini');
   const {state,transport}=fixture();globalThis.fetch=transport;
   assert.equal((await handleMeetingBaasWebhook(baasRequest())).status,200);
   assert.equal(state.job.status,'queued');assert.equal(state.meeting.processing_stage,'transcript_processing');
@@ -148,34 +155,37 @@ Deno.test('recording callback queues once; signed async result preserves named s
   await Promise.all(background);
   assert.equal(state.job.status,'completed');assert.equal(state.meeting.transcription_provider,'elevenlabs');
   assert.equal(state.meeting.transcript_metrics.model,'scribe_v2');assert.equal(state.meeting.ended_at,'2026-10-05T10:01:00.000Z');
-  assert.equal(state.meeting.transcript,'Alice: Hello Bob.\nBob: Yes tomorrow.');assert.equal(state.transcripts.length,2);
-  assert.deepEqual(state.meeting.raw_transcription,result);
+  assert.equal(state.meeting.transcript,'Speaker 1: Hello Bob.\nSpeaker 2: Yes tomorrow.');assert.equal(state.transcripts.length,2);
+  assert.equal(state.meeting.raw_transcription,null);
   assert.equal(state.sources[0].payload.webhook_payload.event,'bot.completed');
   assert.deepEqual(state.sources[0].payload.provider_transcription,result);
-  assert.equal(state.meeting.transcript_source_metadata.normalization_version,2);
+  assert.equal(state.meeting.transcript_source_metadata.normalization_version,3);
   assert.equal((await handleElevenLabsWebhook(await signed(completed(state.job.id)))).status,200);assert.equal(state.submissions,1);
 }));
 
 Deno.test('fast result cannot be overwritten by the later submission acknowledgement',()=>environment(async()=>{
+  Deno.env.set('GEMINI_API_KEY','test-gemini');
   const {state,transport}=fixture();state.earlyCallback=true;globalThis.fetch=transport;
   assert.equal((await handleMeetingBaasWebhook(baasRequest())).status,200);
-  assert.equal(state.job.status,'completed');assert.equal(state.meeting.transcript,'Alice: Hello Bob.\nBob: Yes tomorrow.');
+  assert.equal(state.job.status,'completed');assert.equal(state.meeting.transcript,'Speaker 1: Hello Bob.\nSpeaker 2: Yes tomorrow.');
 }));
 
 Deno.test('ambiguous submission is not charged twice and a signed callback can still recover it',()=>environment(async()=>{
+  Deno.env.set('GEMINI_API_KEY','test-gemini');
   const {state,transport}=fixture();state.ambiguous=true;globalThis.fetch=transport;
   assert.equal((await handleMeetingBaasWebhook(baasRequest())).status,503);assert.equal(state.job.status,'submission_unknown');
-  assert.equal((await handleMeetingBaasWebhook(baasRequest())).status,200);assert.equal(state.submissions,1);
+  assert.equal((await handleMeetingBaasWebhook(baasRequest())).status,503);assert.equal(state.submissions,1);
   assert.equal((await handleElevenLabsWebhook(await signed(completed(state.job.id)))).status,200);
   assert.equal(state.job.status,'completed');assert.equal(state.submissions,1);
   state.meeting.transcript='Old mixed transcript with unnecessarily repeated fragment that must be replaced by normalized turns.';
   assert.equal((await handleProcessElevenLabsTranscription(new Request('https://local.test/process',{method:'POST',
     headers:{Authorization:'Bearer test-service'},body:JSON.stringify({meeting_id:meetingId,reprocess:true})}))).status,200);
-  assert.equal(state.meeting.transcript,'Alice: Hello Bob.\nBob: Yes tomorrow.');
+  assert.equal(state.meeting.transcript,'Speaker 1: Hello Bob.\nSpeaker 2: Yes tomorrow.');
   assert.equal(state.submissions,1);assert.equal(state.sources.length,1);
 }));
 
 Deno.test('saved result can recover after processing failure; recovery endpoint is admin/service-only',()=>environment(async()=>{
+  Deno.env.set('GEMINI_API_KEY','test-gemini');
   const {state,transport}=fixture();globalThis.fetch=transport;
   await handleMeetingBaasWebhook(baasRequest());state.failTranscript=true;
   const background:Promise<unknown>[]=[];(globalThis as any).EdgeRuntime={waitUntil:(p:Promise<unknown>)=>background.push(p)};

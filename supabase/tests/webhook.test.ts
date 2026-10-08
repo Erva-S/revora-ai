@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { handler } from './capture-server.ts';
 import '../functions/meetingbaas-webhook/index.ts';
 import { fingerprintTask } from '../functions/_shared/context-utils.ts';
+import { pipelineRpc } from './pipeline-fakes.ts';
 
 const meetingId='00000000-0000-4000-8000-000000000010';
 const userId='00000000-0000-4000-8000-000000000002';
@@ -24,7 +25,7 @@ async function environment(run: ()=>Promise<void>) {
 }
 
 Deno.test('real webhook duplicate guards skip summarized and completed-with-content deliveries',()=>environment(async()=>{
-  for (const meeting of [{status:'summarized',summary:null,transcript:null},{status:'completed',summary:null,transcript:'Already captured'}]) {
+  for (const meeting of [{status:'summarized',summary:null,transcript:null},{status:'completed',processing_stage:'completed',summary:null,transcript:'Already captured'}]) {
     let requests=0;
     globalThis.fetch=async(url,init)=>{
       requests++; assert.ok(String(url).includes('/rest/v1/meetings'));
@@ -51,6 +52,8 @@ for (const migrated of [true,false]) Deno.test(`real webhook completion ${migrat
   globalThis.fetch=async(input,init)=>{
     const url=new URL(String(input)); const method=init?.method || 'GET';
     const body=init?.body ? JSON.parse(String(init.body)) : null;
+    const rpc = pipelineRpc(url.pathname, body, meeting, (rows) => { transcriptRows=rows; }, migrated);
+    if (rpc) return rpc;
     if (url.hostname==='generativelanguage.googleapis.com') {
       assert.ok(meeting.transcript?.startsWith('Alice: I will ship'), 'transcript saved before Gemini');
       assert.ok(body.contents[0].parts[0].text.includes('open_questions'));
@@ -169,10 +172,12 @@ Deno.test('artifact download failure returns 503 and preserves the recording for
   assert.equal(meeting.recording_url,'https://artifacts.example.test/meeting.mp4');
   assert.equal(meeting.recording_status,'ready');
   assert.equal(meeting.transcript,null);
+  assert.equal(meeting.processing_stage,'processing_failed');
 }));
 
 Deno.test('late video finalization updates a summarized meeting without rerunning transcription or summary', () => environment(async () => {
-  const meeting: any = { id:meetingId,status:'summarized',summary:'Existing summary',transcript:'Existing transcript',recording_status:'processing' };
+  const meeting: any = { id:meetingId,status:'summarized',summary:'Existing summary',transcript:'Existing transcript',recording_status:'processing',
+    recording_metadata:{artifact:'video',format:'mp4',size_bytes:1234} };
   globalThis.fetch = async (input, init) => {
     assert.ok(String(input).includes('/rest/v1/meetings'));
     if (init?.method !== 'GET') {
@@ -185,8 +190,41 @@ Deno.test('late video finalization updates a summarized meeting without rerunnin
   const response = await handler(makeRequest());
   assert.equal(response.status,200); assert.equal((await response.json()).duplicate,true);
   assert.equal(meeting.recording_status,'ready'); assert.equal(meeting.recording_url,'https://artifacts.example.test/meeting.mp4');
+  assert.equal(meeting.recording_metadata.size_bytes,1234);
   assert.equal(meeting.transcript,'Existing transcript'); assert.equal(meeting.summary,'Existing summary');
   meeting.recording_status='expired'; meeting.recording_url=null;
   await handler(makeRequest());
   assert.equal(meeting.recording_status,'expired'); assert.equal(meeting.recording_url,null);
+}));
+
+Deno.test('failed Gemini leaves atomic final transcript saved and completion redelivery retries analysis',()=>environment(async()=>{
+  const meeting:any={id:meetingId,bot_id:'test-bot',status:'pending'};
+  let transcriptRows:any[]=[], summaries:any[]=[], taskFailure=false;
+  globalThis.fetch=async(input,init)=>{
+    const path=new URL(String(input)).pathname;const body=init?.body?JSON.parse(String(init.body)):null;
+    const rpc=pipelineRpc(path,body,meeting,rows=>{transcriptRows=rows;});if(rpc)return rpc;
+    if(path.includes(':generateContent'))return Response.json({candidates:[{content:{parts:[{text:JSON.stringify({executive_summary:'A release commitment.',key_decisions:['Ship'],action_items:[]})}]}}]});
+    if(path.endsWith('/meetings')){if(init?.method!=='GET')Object.assign(meeting,body);return Response.json([meeting]);}
+    if(path.endsWith('/meeting_transcript_sources'))return new Response(null,{status:201});
+    if(path.endsWith('/summaries')){summaries=init?.method==='DELETE'?[]:[body];return new Response(null,{status:204});}
+    if(path.endsWith('/rpc/context_persist_action_items'))return taskFailure?Response.json({code:'PERSISTENCE_OUTAGE'},{status:503}):new Response(null,{status:204});
+    throw new Error('Unexpected test transport');
+  };
+  Deno.env.delete('GEMINI_API_KEY');
+  assert.equal((await handler(makeRequest())).status,503);
+  assert.equal(meeting.processing_stage,'processing_failed');assert.equal(transcriptRows.length,1);
+  const saved=meeting.transcript;Deno.env.set('GEMINI_API_KEY','test-gemini');
+  assert.equal((await handler(makeRequest())).status,200);
+  assert.equal(meeting.status,'summarized');assert.equal(meeting.transcript,saved);assert.equal(transcriptRows.length,1);assert.equal(summaries.length,1);
+  taskFailure=true;meeting.status='completed';meeting.processing_stage='processing_failed';
+  assert.equal((await handler(makeRequest())).status,503);assert.equal(meeting.processing_stage,'processing_failed');
+  taskFailure=false;assert.equal((await handler(makeRequest())).status,200);assert.equal(meeting.status,'summarized');
+  assert.equal(transcriptRows.length,1);assert.equal(summaries.length,1);
+}));
+
+Deno.test('conflicting envelope bot IDs are rejected before any database or artifact access',()=>environment(async()=>{
+  globalThis.fetch=async()=>{throw new Error('No transport for conflicting identities');};
+  const request=new Request('https://local.test',{method:'POST',headers:{'x-mb-secret':'test-secret'},
+    body:JSON.stringify({event:'bot.completed',bot_id:'bot-A',data:{bot_id:'bot-B'}})});
+  assert.equal((await handler(request)).status,409);
 }));

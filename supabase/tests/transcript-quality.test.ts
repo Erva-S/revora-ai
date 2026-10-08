@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.47.10';
 import { assembleTranscript, coalesceRealtimeTranscriptSegments, handleCompletion } from '../functions/_shared/meeting-pipeline.ts';
 import { elevenLabsTranscription } from '../functions/_shared/elevenlabs.ts';
+import { pipelineRpc } from './pipeline-fakes.ts';
 
 const u = (speaker: string, text: string, start: number, step = 0.1) => ({
   speaker, speaker_id: speaker, text, start, end: start + text.split(' ').length * step,
@@ -102,7 +103,7 @@ Deno.test('overlapping named speakers retain separate utterances; unknown overla
   assert.deepEqual(rows(assembled),source.map(t=>[t.speaker,t.text]));
   assert.ok(assembled.turns.every(t=>t.contested));
   const anonymous=await assembleTranscript({...input([u('unknown','Ambiguous speech.',0.2)]),diarization});
-  assert.equal(anonymous.turns[0].speaker,'Unidentified Speaker');assert.equal(anonymous.turns[0].contested,true);
+  assert.equal(anonymous.turns[0].speaker,'Speaker 1');assert.equal(anonymous.turns[0].contested,true);
 });
 
 Deno.test('long two-person speech conserves content and timestamps through safety segmentation', async () => {
@@ -115,21 +116,21 @@ Deno.test('long two-person speech conserves content and timestamps through safet
 Deno.test('participants joining/rejoining use explicit identities; anonymous IDs never become roster IDs by index', async () => {
   const source=[u('10','First participant.',0),u('20','New joiner.',1),u('30','Participant returned.',2)];
   const assembled=await assembleTranscript({participants:[{id:10,name:'Alice'},{id:20,name:'Bob'},{id:30,name:'Alice'}],transcription:source});
-  assert.deepEqual(rows(assembled),[['Alice',source[0].text],['Bob',source[1].text],['Alice',source[2].text]]);
+  assert.deepEqual(rows(assembled),[['Speaker 1',source[0].text],['Speaker 2',source[1].text],['Speaker 3',source[2].text]]);
   const unmapped=await assembleTranscript({participants:[{id:0,name:'Alice'},{id:1,name:'Bob'}],transcription:[u('speaker_0','Unknown voice.',0),u('speaker_1','Another voice.',1)]});
   assert.deepEqual(unmapped.turns.map(t=>t.speaker),['Speaker 1','Speaker 2']);
 });
 
 Deno.test('Scribe cluster mapping stays stable across a stray coarse timeline interval and preserves acoustic boundaries', async () => {
-  const words=Array.from({length:20},(_,i)=>({type:'word',text:`word${i}`,start:i*0.2,end:i*0.2+0.1,speaker_id:'speaker_0'}));
+  const words=Array.from({length:40},(_,i)=>({type:'word',text:`word${i}`,start:i*0.2,end:i*0.2+0.1,speaker_id:'speaker_0'}));
   const transcription=elevenLabsTranscription({text:words.map(w=>w.text).join(' '),words});
-  const diarization=[{speaker:'Alice',start_time:0,end_time:4},{speaker:'Bob',start_time:1,end_time:1.11}].map(s=>JSON.stringify(s)).join('\n');
+  const diarization=[{speaker:'Alice',start_time:0,end_time:8},{speaker:'Bob',start_time:1,end_time:1.11}].map(s=>JSON.stringify(s)).join('\n');
   const assembled=await assembleTranscript({speakers:['Alice','Bob'],transcription,diarization});
   assert.ok(assembled.turns.every(t=>t.speaker==='Alice'));
-  assert.equal(assembled.turns.reduce((n,t)=>n+(t.words?.length||0),0),20);
+  assert.equal(assembled.turns.reduce((n,t)=>n+(t.words?.length||0),0),40);
   assert.equal(assembled.turns[0].source_speaker_id,'speaker_0');
   const conflict=await assembleTranscript({speakers:['Alice','Bob'],transcription,diarization:[
-    {speaker:'Alice',start_time:0,end_time:2},{speaker:'Bob',start_time:2,end_time:4}].map(s=>JSON.stringify(s)).join('\n')});
+    {speaker:'Alice',start_time:0,end_time:4},{speaker:'Bob',start_time:4,end_time:8}].map(s=>JSON.stringify(s)).join('\n')});
   assert.ok(conflict.turns.every(t=>t.speaker==='Speaker 1'),'conflicting mappings retain numbered cluster instead of guessing');
 });
 
@@ -142,9 +143,10 @@ Deno.test('Gemini receives only summary work and cannot edit even unidentified t
   try {
     globalThis.fetch=async(url,init)=>{
       const path=new URL(String(url)).pathname;const body=init?.body?JSON.parse(String(init.body)):null;
+      const rpc=pipelineRpc(path,body,meeting);if(rpc)return rpc;
       if(String(url).includes('generativelanguage.googleapis.com')){
         calls++;assert.ok(body.contents[0].parts[0].text.includes('analysing the complete'));
-        assert.equal(meeting.transcript,'Unidentified Speaker: I will finish it tomorrow.');
+        assert.equal(meeting.transcript,'Speaker 1: I will finish it tomorrow.');
         return Response.json({candidates:[{content:{parts:[{text:JSON.stringify({executive_summary:'A commitment was discussed.',action_items:[],corrections:[{index:0,speaker:'Alice'}]})}]}}]});
       }
       if(path.endsWith('/meeting_transcript_sources')){snapshot=body;return new Response(null,{status:201});}
@@ -163,5 +165,39 @@ Deno.test('Gemini receives only summary work and cannot edit even unidentified t
     globalThis.fetch=fetch;if(old===undefined)Deno.env.delete('GEMINI_API_KEY');else Deno.env.set('GEMINI_API_KEY',old);
   }
   assert.equal(calls,1);assert.deepEqual(snapshot.payload.standardized_transcription,source.transcription);
-  assert.equal(meeting.transcript,'Unidentified Speaker: I will finish it tomorrow.');
+  assert.equal(meeting.transcript,'Speaker 1: I will finish it tomorrow.');
+});
+
+Deno.test('one speaker keeps a mid-sentence pause and punctuation inside one provider utterance', async () => {
+  const source = { speaker:'Alice', text:'Give me the updates now.', start:0, end:9,
+    words:[...u('Alice','Give me the',0).words,...u('Alice','updates now.',8).words] };
+  const assembled = await assembleTranscript(input([source]));
+  assert.deepEqual(rows(assembled),[['Alice',source.text]]);
+  const scribe = elevenLabsTranscription({text:'give me the updates now',words:source.words.map(w=>({type:'word',text:w.word,
+    start:w.start,end:w.end,speaker_id:'speaker_0'}))});
+  const acoustic = await assembleTranscript({transcription:scribe});
+  assert.deepEqual(rows(acoustic),[['Speaker 1','Give me the updates now.']]);
+  assert.equal(acoustic.sourceWordCount,5); assert.equal(acoustic.turns[0].words?.length,5);
+});
+
+Deno.test('redelivery dedupe requires exact speaker/time/text; reused IDs and near timestamps conserve speech', async () => {
+  const first={...u('Alice','yes I agree',0),id:'reused'};
+  const near={...u('Alice','yes I agree',0.0005),id:'reused'};
+  const later={...u('Alice','yes I agree',10),id:'reused'};
+  const other={...u('Bob','yes I agree',0),id:'reused'};
+  const source=[first,structuredClone(first),near,later,other];const original=structuredClone(source);
+  const assembled=await assembleTranscript(input(source));
+  assert.equal(assembled.sourceWordCount,12);assert.equal(assembled.turns.reduce((n,t)=>n+t.text.split(' ').length,0),12);
+  assert.equal(assembled.stats.duplicateUtterancesRemoved,1);
+  assert.deepEqual(source,original);
+});
+
+Deno.test('unnamed non-Scribe clusters are named as a whole meeting, never word by word', async () => {
+  const utterance={speaker_id:'acoustic-A',speaker:'unknown',text:'one two three four',words:[
+    {word:'one',speaker_id:'acoustic-A',start:0,end:1},{word:'two',speaker_id:'acoustic-A',start:1,end:2},
+    {word:'three',speaker_id:'acoustic-A',start:2,end:3},{word:'four',speaker_id:'acoustic-A',start:3,end:4}]};
+  const diarization=[{speaker:'Alice',start_time:0,end_time:2},{speaker:'Bob',start_time:2,end_time:4}].map(s=>JSON.stringify(s)).join('\n');
+  const assembled=await assembleTranscript({...input([utterance]),diarization});
+  assert.deepEqual(rows(assembled),[['Speaker 1',utterance.text]]);
+  assert.equal(assembled.stats.diarizationOverrodeUtteranceSpeaker,0);
 });

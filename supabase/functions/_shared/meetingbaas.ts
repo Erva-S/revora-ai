@@ -84,6 +84,12 @@ export function recordingUrl(data: Record<string, any>): string | null {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export class MeetingBaasError extends ContextError {
+  constructor(public providerStatus: number, code: string) {
+    super(`MeetingBaaS request failed: HTTP ${providerStatus}${code}.`, providerStatus === 404 ? 404 : 502);
+  }
+}
+
 export async function meetingBaasRequest(path: string, method = 'GET', body?: unknown, attempts = 3): Promise<any> {
   const key = sanitizeKey(Deno.env.get('MEETINGBAAS_API_KEY'));
   if (!key || /your[-_]meetingbaas/i.test(key)) throw new ContextError('MEETINGBAAS_API_KEY is not configured.');
@@ -110,6 +116,6 @@ export async function meetingBaasRequest(path: string, method = 'GET', body?: un
       await sleep(Math.min(5000, Math.max(500 * 2 ** attempt, Number.isFinite(retry) ? retry : 0))); continue;
     }
     const code = typeof result?.code === 'string' && /^[A-Z0-9_]+$/.test(result.code) ? ` (${result.code})` : '';
-    throw new ContextError(`MeetingBaaS request failed: HTTP ${response.status}${code}.`, response.status === 404 ? 404 : 502);
+    throw new MeetingBaasError(response.status, code);
   }
 }

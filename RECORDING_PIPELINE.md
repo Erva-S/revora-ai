@@ -1,5 +1,7 @@
 # Recording pipeline: findings, implementation, and deployment
 
+Current checkout audit, corrected implementation and rollout: [MEETING_PIPELINE_FIXES.md](MEETING_PIPELINE_FIXES.md). Hosted observations below are historical and were not re-verified by the October 8 repair.
+
 ## 1. Verified root cause
 
 Read-only live checks on **2026-10-05** found:

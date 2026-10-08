@@ -24,31 +24,33 @@ test('recording client distinguishes processing, missing deployment, API failure
   assert.equal((await requestRecording(client({ data: { success: true, url: 'javascript:bad' } }), 'meeting', 'download')).success, false);
 });
 
-test('native download errors require matching frontend origin, frame and request ID; cleanup removes listeners', () => {
+test('native download starts without buffering a blob and cleanup removes the frame', () => {
   const oldWindow = globalThis.window, oldDocument = globalThis.document;
-  const frames = [], failures = []; let listener; let cleanup;
+  const frames = []; let cleanup;
   const fakeWindow = { location: { origin: 'https://app.test' },
-    addEventListener: (_name, callback) => { listener = callback; },
-    removeEventListener: (_name, callback) => { if (listener === callback) listener = undefined; } };
+  };
   globalThis.window = fakeWindow;
   globalThis.document = {
     createElement: () => ({ contentWindow: {}, removed: false, remove() { this.removed = true; } }),
     body: { appendChild: (frame) => frames.push(frame) },
   };
   try {
-    cleanup = startRecordingDownload({ url: 'https://backend.test/download?ticket=scoped-grant', request_id: 'request' }, (error) => failures.push(error));
+    cleanup = startRecordingDownload({ url: 'https://backend.test/download?ticket=scoped-grant' });
     const frame = frames[0]; assert.equal(frame.hidden, true); assert.match(frame.src, /download\?ticket=/);
-    const event = { origin: 'https://app.test', source: frame.contentWindow,
-      data: { type: 'revora-recording-download-error', request_id: 'request', error: 'File unavailable' } };
-    listener({ ...event, origin: 'https://attacker.test' });
-    listener({ ...event, source: {} });
-    listener({ ...event, data: { ...event.data, request_id: 'other' } });
-    assert.equal(failures.length, 0);
-    listener(event); assert.deepEqual(failures, ['File unavailable']);
-    assert.equal(frame.removed, true); assert.equal(listener, undefined);
+    cleanup(); assert.equal(frame.removed, true);
   } finally {
     cleanup?.();
     if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow;
     if (oldDocument === undefined) delete globalThis.document; else globalThis.document = oldDocument;
   }
+});
+
+test('HTTP deployment/auth/expiry errors never become network errors; actual transport failure does', async () => {
+  for(const [http,state]of [[404,'unavailable'],[401,'auth_error'],[403,'auth_error'],[410,'expired'],[202,'processing']]){
+    const client={functions:{invoke:async()=>({error:{context:new Response(null,{status:http})}})}};
+    const failure=await requestRecording(client,'meeting','watch');
+    assert.equal(failure.status,state);assert.equal(failure.http_status,http);assert.ok(!failure.error.includes('connection'));
+  }
+  const failed=await requestRecording({functions:{invoke:async()=>{throw new TypeError('fetch failed');}}},'meeting','watch');
+  assert.equal(failed.status,'network_error');
 });

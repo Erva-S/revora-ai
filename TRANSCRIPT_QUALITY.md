@@ -1,5 +1,7 @@
 # Transcript quality: deterministic source → turns → display
 
+Current audit and implementation: [MEETING_PIPELINE_FIXES.md](MEETING_PIPELINE_FIXES.md). The October 8 repair supersedes the older descriptions below: ≥2 seconds naming evidence, exact-only deduplication, normalization version 3, service-only raw data and atomic ordered persistence.
+
 ## Provider decision and diagnosis
 
 The repository defaults to direct asynchronous **ElevenLabs Scribe v2**

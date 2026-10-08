@@ -1,7 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { authenticate, corsHeaders, errorResponse, json, readBody } from '../_shared/context-http.ts';
 import { ContextError, requireDb, UUID } from '../_shared/context-utils.ts';
-import { fetchVideo, RecordingError, signDownloadGrant } from '../_shared/meeting-recording.ts';
+import { fetchVideo, RecordingError, saveRecording, signDownloadGrant } from '../_shared/meeting-recording.ts';
 
 serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -11,29 +11,31 @@ serve(async (req: Request): Promise<Response> => {
     const body = await readBody(req);
     if (!UUID.test(String(body.meeting_id || ''))) throw new ContextError('meeting_id must be a UUID.', 400);
     if (body.action && !['watch', 'download'].includes(body.action)) throw new ContextError('Unknown recording action.', 400);
-    const lookup = () => auth.user!.from('meetings').select('id,user_id,bot_id,title').eq('id', body.meeting_id).maybeSingle();
+    const lookup = () => auth.user!.from('meetings').select('id,user_id,bot_id,title,recording_metadata').eq('id', body.meeting_id).maybeSingle();
     const meeting = await lookup();
     requireDb(meeting.error, 'Meeting lookup');
     // Explicit ownership also protects projects still running old permissive RLS.
     const allowed = (row: any) => row && (auth.isAdmin || row.user_id === auth.userId);
-    if (!meeting.data || !allowed(meeting.data)) throw new ContextError('Meeting not found or access denied.', 404);
-    const artifact = await fetchVideo(auth.admin, meeting.data, 'bytes=0-31', req.signal);
+    if (!meeting.data || !allowed(meeting.data)) throw new RecordingError('MEETING_ACCESS_DENIED', 'Meeting not found or access denied.', 403, 'auth_error');
+    const artifact = await fetchVideo(auth.admin, meeting.data, 'bytes=0-31', req.signal, body.action !== 'download');
     await artifact.response.body?.cancel(); artifact.cleanup();
+    if (artifact.response.status === 416) {
+      await saveRecording(auth.admin, meeting.data.id, meeting.data.bot_id, { recording_status: 'processing',
+        recording_metadata: { ...artifact.metadata, error_message: 'No playable recording bytes are available yet.' } });
+      throw new RecordingError('RECORDING_PROCESSING', 'No playable recording bytes are available yet. Please try again shortly.', 202, 'processing');
+    }
     const current = await lookup();
     if (current.error || !current.data || !allowed(current.data) || current.data.bot_id !== meeting.data.bot_id)
       throw new ContextError('Meeting access changed. Reload the meeting and try again.', 403);
     let url = artifact.url;
-    let requestId: string | undefined;
     if (body.action === 'download') {
-      requestId = crypto.randomUUID();
-      let origin: string | null = null;
-      try { const parsed = new URL(req.headers.get('origin') || ''); if (['https:', 'http:'].includes(parsed.protocol)) origin = parsed.origin; } catch { /* non-browser requests have no origin */ }
       const grant = await signDownloadGrant({ meeting_id: meeting.data.id, bot_id: meeting.data.bot_id,
-        user_id: auth.userId!, request_id: requestId, origin,
+        user_id: auth.userId!,
         exp: Math.floor(Date.now() / 1000) + 120 });
       url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/download-meeting-recording?ticket=${encodeURIComponent(grant)}`;
     }
-    const response = json({ success: true, status: 'ready', url, request_id: requestId,
+    const response = json({ success: true, status: 'ready', url,
+      ...(body.action === 'download' ? { fallback_url: artifact.url } : {}),
       filename: `meeting-recording-${meeting.data.id}.mp4`, metadata: artifact.metadata });
     response.headers.set('Cache-Control', 'private, no-store');
     return response;

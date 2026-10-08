@@ -15,7 +15,7 @@ async function environment(run: () => Promise<void>) {
   finally { globalThis.fetch = original; for (const [k, v] of Object.entries(previous)) { if (v === undefined) Deno.env.delete(k); else Deno.env.set(k, v); } }
 }
 const token = (override = {}) => signDownloadGrant({ meeting_id: id, bot_id: botId, user_id: id,
-  exp: Math.floor(Date.now() / 1000) + 120, request_id: other, origin: null, ...override });
+  exp: Math.floor(Date.now() / 1000) + 120, ...override });
 const request = (ticket: string, headers = {}, method = 'GET') => new Request(`https://supabase.test/function?ticket=${ticket}`, { method, headers });
 function fixture() {
   const state: any = { meeting: { id, user_id: id, bot_id: botId }, role: 'user', reads: 0, providerCalls: 0, ranges: [],
@@ -25,7 +25,7 @@ function fixture() {
     if (url.includes('/rest/v1/')) {
       assert.equal(headers.get('authorization'), 'Bearer test-service');
       if (url.includes('/profiles')) return Response.json(state.role ? [{ role: state.role }] : []);
-      if (init?.method === 'PATCH') return new Response(null, { status: 204 });
+      if (init?.method === 'PATCH') return Response.json([state.meeting]);
       state.reads++; return Response.json(state.revoked && state.reads > 1 ? [] : [state.meeting]);
     }
     if (url.includes('/v2/bots/')) { state.providerCalls++; return Response.json({ data: { bot_id: botId, status: 'completed', video: 'https://storage.test/video.mp4' }, success: true }); }
@@ -96,16 +96,13 @@ Deno.test('malformed multi-ranges are rejected; upstream unsatisfiable ranges re
   assert.equal(response.status, 416); assert.equal(response.headers.get('content-range'), 'bytes */12'); assert.equal(await response.text(), '');
 }));
 
-Deno.test('pre-stream download failures notify only the ticket-bound frontend origin/request', () => environment(async () => {
+Deno.test('pre-stream failures preserve HTTP status and never redirect or embed extra grant claims', () => environment(async () => {
   const state = fixture(); state.meeting.user_id = other;
-  const response = await handler(request(await token({ origin: 'https://app.test' })));
-  assert.equal(response.status, 302);
-  const callback = new URL(response.headers.get('location')!);
-  assert.equal(callback.origin, 'https://app.test'); assert.equal(callback.pathname, '/recording-download-status.html');
-  assert.equal(callback.searchParams.get('request_id'), other);
-  assert.ok(callback.searchParams.get('message')!.includes('access denied')); assert.ok(!callback.href.includes('test-service'));
-  const expired = await handler(request(await token({ origin: 'https://app.test', exp: 1 })));
-  assert.equal(expired.status, 302); assert.ok(new URL(expired.headers.get('location')!).searchParams.get('message')!.includes('Download access has expired'));
+  const response = await handler(request(await token()));
+  assert.equal(response.status, 403); assert.equal(response.headers.get('location'), null);
+  assert.equal((await response.json()).code, 'DOWNLOAD_ACCESS_DENIED');
+  assert.equal((await handler(request(await token({ exp: 1 })))).status, 401);
+  assert.equal((await handler(request(await token({ origin: 'https://app.test' })))).status, 401);
 }));
 
 Deno.test('large downloads are backpressure streamed and cancellation reaches storage', () => environment(async () => {
@@ -117,4 +114,19 @@ Deno.test('large downloads are backpressure streamed and cancellation reaches st
   const response = await handler(request(await token()));
   assert.equal(response.status, 200); assert.ok(pulled < 10, 'do not eagerly buffer the whole recording');
   await response.body!.cancel(); assert.equal(cancelled, true);
+}));
+
+Deno.test('truncated streams fail explicitly instead of reporting a successful full attachment', () => environment(async () => {
+  const state=fixture();state.response=()=>new Response(new Uint8Array(3),{headers:{'Content-Type':'video/mp4','Content-Length':'12'}});
+  const response=await handler(request(await token()));
+  await assert.rejects(response.arrayBuffer(),/interrupted/);
+}));
+
+Deno.test('processing and retention deletion preserve distinct HTTP statuses and Retry-After', () => environment(async () => {
+  for(const [details,http,code]of [[{status:'call_ended'},202,'RECORDING_PROCESSING'],[{artifacts_deleted:true},410,'RECORDING_EXPIRED']]as const){
+    const {meeting}=fixture();const original=globalThis.fetch;
+    globalThis.fetch=async(input,init)=>String(input).includes('/v2/bots/')?Response.json({success:true,data:{bot_id:meeting.bot_id,...details}}):original(input,init);
+    const response=await handler(request(await token()));assert.equal(response.status,http);assert.equal((await response.json()).code,code);
+    if(http===202)assert.equal(response.headers.get('retry-after'),'15');
+  }
 }));

@@ -22,6 +22,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.47.10';
 import { botCaptureConfig, meetingBaasRequest, meetingBaasTranscriptionConfig, sanitizeKey, transcriptionConfig } from '../_shared/meetingbaas.ts';
 import { elevenLabsConfig } from '../_shared/elevenlabs.ts';
 import { ContextError } from '../_shared/context-utils.ts';
+import { pipelineLog } from '../_shared/pipeline-log.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -330,7 +331,7 @@ serve(async (req: Request): Promise<Response> => {
       if (SUPABASE_URL && SERVICE_ROLE_KEY) {
         try {
           const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-          await supabaseAdmin.from('meetings').insert({
+          const failedInsert = await supabaseAdmin.from('meetings').insert({
             user_id: userId,
             ...(projectId ? { project_id: projectId } : {}),
             meeting_url: meetingUrl,
@@ -340,8 +341,9 @@ serve(async (req: Request): Promise<Response> => {
             error_message: dispatchError || 'Failed to dispatch MeetingBaaS bot',
             started_at: new Date().toISOString(),
           });
-        } catch (failedDbErr) {
-          console.error('[Deploy-Bot Failure DB Error]:', failedDbErr);
+          if (failedInsert.error) pipelineLog('failed_bot_state_save_failed', null, null, { http_status: 503 });
+        } catch {
+          pipelineLog('failed_bot_state_save_failed', null, null, { http_status: 503 });
         }
       }
 
@@ -363,29 +365,30 @@ serve(async (req: Request): Promise<Response> => {
         const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
         const { data: dbData, error: dbError } = await supabaseAdmin
           .from('meetings')
-          .insert({
+          .upsert({
             user_id: userId,
             ...(projectId ? { project_id: projectId } : {}),
             bot_id: botId,
             meeting_url: meetingUrl,
             platform: detectPlatform(meetingUrl),
             title: title,
-            status: 'pending',
             transcription_provider: stt.provider,
-            started_at: new Date().toISOString(),
-          })
+          }, { onConflict: 'bot_id' })
           .select('id, bot_id, status')
           .single();
 
         if (dbError) {
-          console.error('[Deploy-Bot DB Error]:', dbError);
+          pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503 });
         } else if (dbData) {
           meetingId = dbData.id;
         }
-      } catch (dbErr) {
-        console.error('[Deploy-Bot DB Exception]:', dbErr);
+      } catch {
+        pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503 });
       }
     }
+
+    if (!meetingId) return json({ success: false, bot_id: botId, dispatched: true,
+      error: 'The bot was dispatched, but meeting ownership could not be saved. Do not deploy a second bot; retry saving this bot in the database.' }, 503);
 
     return json(
       {
@@ -403,7 +406,7 @@ serve(async (req: Request): Promise<Response> => {
       200
     );
   } catch (err: any) {
-    console.error('[Deploy-Bot Fatal Exception]:', err);
-    return json({ success: false, error: err.message || 'Internal server error' }, 500);
+    pipelineLog('bot_dispatch_failed', null, null, { http_status: 500 });
+    return json({ success: false, error: err instanceof ContextError ? err.message : 'Internal server error' }, 500);
   }
 });

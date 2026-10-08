@@ -2,34 +2,35 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.47.10';
 import { corsHeaders, json } from '../_shared/context-http.ts';
 import { ContextError, requireDb } from '../_shared/context-utils.ts';
-import { fetchVideo, RecordingError, verifyDownloadGrant } from '../_shared/meeting-recording.ts';
+import { fetchVideo, RecordingError, saveRecording, verifyDownloadGrant } from '../_shared/meeting-recording.ts';
 import type { DownloadGrant } from '../_shared/meeting-recording.ts';
+import { pipelineLog } from '../_shared/pipeline-log.ts';
 
 const mediaHeaders = { ...corsHeaders, 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
   'Access-Control-Allow-Headers': `${corsHeaders['Access-Control-Allow-Headers']}, range`,
-  'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length, Content-Range, Accept-Ranges',
+  'Access-Control-Expose-Headers': 'Content-Disposition, Content-Length, Content-Range, Accept-Ranges, X-Recording-Code, X-Recording-Status, Retry-After',
   'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer' };
 
 serve(async (req: Request): Promise<Response> => {
+  const started = Date.now();
   if (req.method === 'OPTIONS') return new Response('ok', { headers: mediaHeaders });
   if (!['GET', 'HEAD'].includes(req.method)) return json({ success: false, error: 'Method not allowed.' }, 405);
   let grant: DownloadGrant | undefined;
   try {
     // Native browser downloads cannot attach session headers. Authenticate the
     // two-minute, meeting/user/bot-scoped grant minted by the JWT/RLS endpoint.
-    // Retain verified claims for notifying the app of expiry, never for access.
-    grant = await verifyDownloadGrant(new URL(req.url).searchParams.get('ticket') || '', true);
-    if (grant.exp <= Math.floor(Date.now() / 1000))
-      throw new RecordingError('DOWNLOAD_ACCESS_EXPIRED', 'Download access has expired. Click Download Recording again.', 401);
+    grant = await verifyDownloadGrant(new URL(req.url).searchParams.get('ticket') || '');
     const range = req.headers.get('range');
     if (range && (!/^bytes=\d*-\d*$/.test(range) || range === 'bytes=-' ||
-        range.slice(6).split('-').some((n) => n && !Number.isSafeInteger(Number(n)))))
+        range.slice(6).split('-').some((n) => n && !Number.isSafeInteger(Number(n))) ||
+        (range.startsWith('bytes=-') && Number(range.slice(7)) === 0) ||
+        (/^bytes=\d+-\d+$/.test(range) && Number(range.split('-')[1]) < Number(range.slice(6).split('-')[0]))))
       throw new ContextError('Only a single valid byte range is supported.', 416);
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
       { auth: { persistSession: false, autoRefreshToken: false } });
     const lookup = async () => {
       const [meeting, profile] = await Promise.all([
-        admin.from('meetings').select('id,user_id,bot_id,title').eq('id', grant!.meeting_id).maybeSingle(),
+        admin.from('meetings').select('id,user_id,bot_id,title,recording_metadata').eq('id', grant!.meeting_id).maybeSingle(),
         admin.from('profiles').select('role').eq('id', grant!.user_id).maybeSingle(),
       ]);
       requireDb(meeting.error, 'Recording permission lookup'); requireDb(profile.error, 'Recording role lookup');
@@ -55,14 +56,29 @@ serve(async (req: Request): Promise<Response> => {
     }
     // Backpressure-aware byte streaming: no transcoding or whole-video buffer.
     const reader = media.response.body!.getReader();
+    let bytes = 0;
+    let cancelled = false;
+    const expected = media.response.headers.get('content-length');
     const stream = new ReadableStream({
       async pull(controller) {
         try {
           const next = await reader.read();
-          if (next.done) { media.cleanup(); controller.close(); } else controller.enqueue(next.value);
-        } catch { media.cleanup(); console.error(`[Recording] download stream interrupted meeting=${meeting.id}`); controller.error(new Error('Recording download interrupted.')); }
+          if (next.done) {
+            if (expected !== null && bytes !== Number(expected)) throw new Error('Incomplete recording stream.');
+            media.cleanup(); pipelineLog('recording_stream', meeting.id, meeting.bot_id, {
+              duration_ms: Date.now()-started, bytes, http_status: media.response.status }); controller.close();
+          } else { bytes += next.value.byteLength; controller.enqueue(next.value); }
+        } catch {
+          media.cleanup(); if (cancelled) return;
+          pipelineLog('recording_stream_failed', meeting.id, meeting.bot_id, {
+            duration_ms: Date.now()-started, bytes, http_status: 502 });
+          try { await saveRecording(admin, meeting.id, meeting.bot_id, { recording_status: 'failed',
+            recording_metadata: { ...media.metadata, error_message: 'Recording download interrupted; refresh access and retry.' } }); }
+          catch { pipelineLog('recording_failure_state_save_failed', meeting.id, meeting.bot_id, { http_status: 503 }); }
+          controller.error(new Error('Recording download interrupted.'));
+        }
       },
-      async cancel(reason) { media.cleanup(); await reader.cancel(reason); },
+      async cancel(reason) { cancelled = true; media.cleanup(); await reader.cancel(reason); },
     });
     return new Response(stream, { status: media.response.status, headers });
   } catch (error) {
@@ -70,15 +86,13 @@ serve(async (req: Request): Promise<Response> => {
       ? error.message : 'The recording download failed. Please try again shortly.';
     const status = error instanceof ContextError ? error.status : 500;
     console.warn(`[Recording] download rejected code=${error instanceof RecordingError ? error.code : 'DOWNLOAD_ERROR'} http=${status}`);
-    // Supabase's standard domain rewrites GET text/html to text/plain. Use a
-    // static page on the signed frontend origin to report iframe errors instead.
-    if (grant?.origin && req.method === 'GET') {
-      const callback = new URL('/recording-download-status.html', grant.origin);
-      callback.searchParams.set('request_id', grant.request_id);
-      callback.searchParams.set('message', message);
-      return new Response(null, { status: 302, headers: { ...mediaHeaders, Location: callback.href } });
-    }
-    const response = json({ success: false, error: message, code: error instanceof RecordingError ? error.code : 'DOWNLOAD_ERROR' }, status);
+    pipelineLog('recording_stream_rejected', grant?.meeting_id ?? null, grant?.bot_id ?? null, { duration_ms: Date.now()-started, http_status: status });
+    const response = json({ success: false, error: message, status: error instanceof RecordingError ? error.recordingStatus : 'failed',
+      code: error instanceof RecordingError ? error.code : 'DOWNLOAD_ERROR' }, status);
+    for (const [name,value] of Object.entries(mediaHeaders)) response.headers.set(name,value);
+    response.headers.set('X-Recording-Code', error instanceof RecordingError ? error.code : 'DOWNLOAD_ERROR');
+    response.headers.set('X-Recording-Status', error instanceof RecordingError ? error.recordingStatus : 'failed');
+    if (status === 202) response.headers.set('Retry-After','15');
     response.headers.set('Cache-Control', 'private, no-store');
     return response;
   }

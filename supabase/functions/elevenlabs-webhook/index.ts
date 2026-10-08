@@ -4,8 +4,11 @@ import { json } from '../_shared/context-http.ts';
 import { ContextError, requireDb, UUID } from '../_shared/context-utils.ts';
 import { elevenLabsTranscription, verifyElevenLabsRequest } from '../_shared/elevenlabs.ts';
 import { processElevenLabsJob } from '../_shared/elevenlabs-processing.ts';
+import { pipelineLog } from '../_shared/pipeline-log.ts';
 
 export async function handleElevenLabsWebhook(req: Request): Promise<Response> {
+  const started = Date.now();
+  let meetingId: string | null = null, botId: string | null = null;
   if (req.method !== 'POST') return json({ error: 'Method not allowed.' }, 405);
   const raw = await req.text();
   if (!await verifyElevenLabsRequest(req, raw)) return json({ error: 'Invalid ElevenLabs signature.' }, 401);
@@ -26,6 +29,11 @@ export async function handleElevenLabsWebhook(req: Request): Promise<Response> {
     requireDb(lookup.error, 'Transcription job lookup');
     const job = lookup.data;
     if (!job) throw new ContextError('Transcription job is not available; retry delivery.', 503);
+    meetingId = job.meeting_id; botId = job.input_payload?.bot_id ?? null;
+    pipelineLog('stt_callback', job.meeting_id, job.input_payload?.bot_id ?? null, {
+      job_id: job.id, http_status: 202, duration_ms: Date.now()-started,
+      words: Array.isArray(data.transcription?.words) ? data.transcription.words.length : 0,
+    });
     if (job.request_id && job.request_id !== data.request_id) throw new ContextError('Transcription request ID mismatch.', 409);
     if (job.status === 'completed') return json({ success: true, duplicate: true });
     if (body.type === 'speech_to_text.failed' || data.status === 'failed') {
@@ -61,6 +69,8 @@ export async function handleElevenLabsWebhook(req: Request): Promise<Response> {
   } catch (error) {
     const message = error instanceof ContextError ? error.message : 'ElevenLabs webhook processing failed; retry delivery.';
     console.warn(`[ElevenLabs] ${message}`);
+    pipelineLog('stt_callback_failed', meetingId, botId, { duration_ms: Date.now()-started,
+      http_status: error instanceof ContextError ? error.status : 503 });
     return json({ success: false, error: message }, error instanceof ContextError ? error.status : 503);
   }
 }

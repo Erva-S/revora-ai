@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { handler } from './capture-server.ts';
 import '../functions/deploy-bot/index.ts';
+import { handleMeetingBaasWebhook } from '../functions/_shared/meeting-pipeline.ts';
+import { pipelineRpc } from './pipeline-fakes.ts';
 
 const userId='00000000-0000-4000-8000-000000000001';
 const botId='00000000-0000-4000-8000-000000000002';
@@ -94,4 +96,45 @@ Deno.test('permanent leave failure is surfaced and never falsely reported succes
     return Response.json({error:'bad provider credentials'},{status:401});
   };
   const response=await handler(req('DELETE'));assert.equal(response.status,502);assert.equal((await response.json()).success,false);
+}));
+
+Deno.test('completion before dispatch persistence is retried, then attaches to exactly one owned bot-id upsert',()=>environment(async()=>{
+  let meeting:any=null, dispatches=0, writes=0;
+  const callback=()=>new Request('https://local.test/webhook',{method:'POST',headers:{'x-mb-secret':'test-callback'},
+    body:JSON.stringify({event:'bot.completed',data:{bot_id:botId,transcription:[]}})});
+  globalThis.fetch=async(input,init)=>{
+    const url=new URL(String(input));const auth=authResponse(url.href);if(auth)return auth;
+    if(url.hostname==='provider.test'){
+      dispatches++;
+      assert.equal((await handleMeetingBaasWebhook(callback())).status,503);
+      assert.equal(meeting,null,'early callback must not insert an ownerless row');
+      return Response.json({success:true,data:{bot_id:botId}},{status:201});
+    }
+    const body=init?.body?JSON.parse(String(init.body)):null;
+    const rpc=meeting?pipelineRpc(url.pathname,body,meeting):null;if(rpc)return rpc;
+    if(url.pathname.endsWith('/meeting_transcript_sources'))return new Response(null,{status:201});
+    assert.ok(url.pathname.endsWith('/meetings'));
+    if(init?.method==='POST'){
+      writes++;assert.equal(url.searchParams.get('on_conflict'),'bot_id');
+      assert.match(new Headers(init.headers).get('prefer')!,/resolution=merge-duplicates/);
+      assert.ok(!('status'in body));assert.ok(!('transcript'in body));assert.ok(!('recording_url'in body));
+      meeting={id:meetingId,status:'pending',...body};return Response.json(meeting,{status:201});
+    }
+    if(init?.method==='PATCH'){Object.assign(meeting,body);return Response.json([meeting]);}
+    return Response.json(meeting?[meeting]:[]);
+  };
+  assert.equal((await handler(req())).status,200);assert.equal(meeting.user_id,userId);
+  assert.equal((await handleMeetingBaasWebhook(callback())).status,200);
+  assert.equal(meeting.bot_id,botId);assert.equal(meeting.user_id,userId);assert.equal(writes,1);assert.equal(dispatches,1);
+  assert.equal((await handleMeetingBaasWebhook(callback())).status,200);assert.equal(writes,1);
+}));
+
+Deno.test('dispatched bot persistence failure is explicit and never returns success',()=>environment(async()=>{
+  globalThis.fetch=async(input)=>{
+    const url=String(input);const auth=authResponse(url);if(auth)return auth;
+    if(url.includes('/v2/bots'))return Response.json({success:true,data:{bot_id:botId}},{status:201});
+    return Response.json({code:'DATABASE_FAILURE'},{status:503});
+  };
+  const response=await handler(req());const data=await response.json();
+  assert.equal(response.status,503);assert.equal(data.success,false);assert.equal(data.dispatched,true);assert.equal(data.bot_id,botId);
 }));

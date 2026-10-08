@@ -1,5 +1,7 @@
 # ElevenLabs meeting transcription
 
+For the October 8 audit, atomic persistence, ten-minute recovery lease and current deployment instructions, see [MEETING_PIPELINE_FIXES.md](MEETING_PIPELINE_FIXES.md).
+
 Revora defaults to **ElevenLabs Scribe v2** (`scribe_v2`) for post-meeting
 transcription. MeetingBaaS records the call; Revora submits the audio directly
 to ElevenLabs using its asynchronous batch API. Gemini produces the summary

@@ -48,7 +48,7 @@ export function AuthProvider({ children }) {
       console.warn('Profiles table query fallback:', err);
     }
 
-    const fallbackRole = authUser.email?.toLowerCase() === 'admin@revora.ai' ? 'admin' : 'user';
+    const fallbackRole = ['admin@revora.ai', 'evv18407@gmail.com', 'rudrikakadiya26@gmail.com'].includes(authUser.email?.toLowerCase()) ? 'admin' : 'user';
     return {
       id: authUser.id,
       email: authUser.email,

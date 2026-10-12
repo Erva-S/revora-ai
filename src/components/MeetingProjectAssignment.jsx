@@ -16,7 +16,12 @@ export default function MeetingProjectAssignment({ meeting, onAssigned }) {
       supabase.from('projects').select('id,name,clients(name)').order('name'),
       supabase.from('clients').select('id,name').order('name'),
     ]);
-    if (p.error || c.error) { setError('Projects are unavailable. Check the context migration and your admin access.'); return; }
+    if (p.error || c.error) {
+      console.error('Failed to load projects/clients:', p.error, c.error);
+      setError('Projects are unavailable. Check your connection or database permissions.');
+      return;
+    }
+    setError('');
     setProjects(p.data || []); setClients(c.data || []);
   }, [available]);
   useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
@@ -36,16 +41,45 @@ export default function MeetingProjectAssignment({ meeting, onAssigned }) {
     e.preventDefault(); setBusy(true); setError('');
     try {
       const { data: session } = await supabase.auth.getSession();
-      const createdBy = session.session?.user?.id || null;
+      const isValidUUID = (id) => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+      const createdBy = isValidUUID(session?.session?.user?.id) ? session.session.user.id : null;
       let chosen = clientId;
       if (!chosen) {
-        const result = await supabase.from('clients').insert({ name: clientName.trim(), created_by: createdBy }).select('id').single();
-        if (result.error) throw result.error;
-        chosen = result.data.id; setClientId(chosen); setClientName('');
+        const trimmedClient = clientName.trim();
+        // Reuse client if it already exists (case-insensitive)
+        const { data: existingClient } = await supabase
+          .from('clients')
+          .select('id')
+          .ilike('name', trimmedClient)
+          .maybeSingle();
+
+        if (existingClient?.id) {
+          chosen = existingClient.id;
+        } else {
+          const result = await supabase.from('clients').insert({ name: trimmedClient, created_by: createdBy }).select('id').single();
+          if (result.error) throw result.error;
+          chosen = result.data.id;
+        }
+        setClientId(chosen); setClientName('');
       }
-      const result = await supabase.from('projects').insert({ client_id: chosen, name: projectName.trim(), created_by: createdBy }).select('id').single();
-      if (result.error) throw result.error;
-      await assign(result.data.id); setProjectName('');
+
+      const trimmedProject = projectName.trim();
+      let targetProjectId;
+      const { data: existingProject } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('client_id', chosen)
+        .ilike('name', trimmedProject)
+        .maybeSingle();
+
+      if (existingProject?.id) {
+        targetProjectId = existingProject.id;
+      } else {
+        const result = await supabase.from('projects').insert({ client_id: chosen, name: trimmedProject, created_by: createdBy }).select('id').single();
+        if (result.error) throw result.error;
+        targetProjectId = result.data.id;
+      }
+      await assign(targetProjectId); setProjectName('');
     } catch (err) { setError(err.message || 'Could not create client/project.'); }
     finally { await load(); setBusy(false); }
   };

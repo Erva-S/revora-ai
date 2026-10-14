@@ -23,7 +23,19 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
+  const [linkedPlannedMeeting, setLinkedPlannedMeeting] = useState(null);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLinkedPlannedMeeting(null);
+    if (!selected?.id) return () => { cancelled = true; };
+    supabase.from('planned_meetings').select('*').eq('linked_meeting_id', selected.id).maybeSingle()
+      .then(({ data, error: lookupError }) => {
+        if (!cancelled && !lookupError) setLinkedPlannedMeeting(data || null);
+      });
+    return () => { cancelled = true; };
+  }, [selected?.id]);
 
   const ownerLabel = (userId) => {
     if (!userId) return 'Admins only';
@@ -220,9 +232,13 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
                setSelected(updated);
                setMeetings((current) => current.map((m) => m.id === updated.id ? updated : m));
              }} />
-             <ContextBriefingSection key={`${selected.id}:${selected.project_id || ''}`} meeting={selected} />
+              <ContextBriefingSection key={`${selected.id}:${selected.project_id || ''}`} meeting={selected} />
+              {linkedPlannedMeeting && <section className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Pre-meeting briefing</h4>
+                <ContextBriefingSection key={`planned:${linkedPlannedMeeting.id}`} plannedMeeting={linkedPlannedMeeting} readOnly />
+              </section>}
 
-              {(selected.bot_id || selected.recording_url) && <MeetingRecordingLink key={selected.id} meeting={selected} />}
+               {(selected.bot_id || selected.recording_url) && <MeetingRecordingLink key={selected.id} meeting={selected} />}
 
             {selected.summary && (
               <div className="space-y-2">

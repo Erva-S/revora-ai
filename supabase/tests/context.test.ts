@@ -146,7 +146,7 @@ Deno.test('briefing relational isolation, embedding outage fallback, input hash 
   ].map(m=>({...m,status:'summarized',title:`Meeting ${m.id}`,summary:'Real meeting summary',started_at:null,created_at:'2026-10-01',updated_at:'2026-10-01',summaries:[]}));
   const task={id:id(200),meeting_id:id(11),task:'Ship release',assignee:'Alice',status:'pending',due_date:null,updated_at:'2026-10-01',meetings:meetings[1]};
   const db=new MemoryDb({projects:[{id:id(100),name:'P',clients:{name:'C'}}],meetings,action_items:[task],transcript_chunks:[]});
-  const scope={projectId:id(100),meetingId:id(10),ownerId:id(2),title:'Sync',agenda:'Release',scheduledFor:null};
+  const scope={projectId:id(100),meetingId:id(10),plannedMeetingId:null,ownerId:id(2),title:'Sync',agenda:'Release',scheduledFor:null};
   try {
     globalThis.fetch=async()=>{throw new Error('No external calls expected without indexed history');};
     const first=await buildBriefingContext(db,scope);
@@ -162,6 +162,38 @@ Deno.test('briefing relational isolation, embedding outage fallback, input hash 
     const project=await buildBriefingContext(db,{...scope,meetingId:null,ownerId:null});
     assert.deepEqual(project.sourceIds,[id(10),id(11),id(12)]);
   } finally { globalThis.fetch=original; Deno.env.delete('GEMINI_API_KEY'); }
+});
+
+Deno.test('planned NULL-owner scope calls the scoped vector RPC without widening ownership', async () => {
+  const original=globalThis.fetch;
+  const previous=Deno.env.get('GEMINI_API_KEY');
+  Deno.env.set('GEMINI_API_KEY','test-only-placeholder');
+  const nullOwner={id:id(15),project_id:id(100),user_id:null,status:'summarized',title:'Unassigned history',summary:'Null-owner history',
+    started_at:null,created_at:'2026-10-01',updated_at:'2026-10-01',summaries:[]};
+  const owned={id:id(11),project_id:id(100),user_id:id(2),status:'summarized',title:'Owned history',summary:'Other owner history',
+    started_at:null,created_at:'2026-10-02',updated_at:'2026-10-02',summaries:[]};
+  const db=new MemoryDb({projects:[{id:id(100),name:'P',clients:{name:'C'}}],meetings:[nullOwner,owned],action_items:[],
+    transcript_chunks:[{id:id(300),meeting_id:id(15),embedding:'vector',meetings:nullOwner}]});
+  let rpcName=''; let rpcArgs:any;
+  (db as any).rpc=async(name:string,args:any)=>{
+    rpcName=name; rpcArgs=args;
+    return {data:[{id:id(300),meeting_id:id(15),meeting_title:'Unassigned history',meeting_date:'2026-10-01',
+      text:'Only null-owner history',start_time:null,end_time:null,embedding_model:'gemini-embedding-001'}],error:null};
+  };
+  try {
+    globalThis.fetch=async()=>Response.json({embeddings:[{values:[1,...Array(767).fill(0)]}]});
+    const result=await buildBriefingContext(db,{projectId:id(100),meetingId:null,plannedMeetingId:id(210),ownerId:null,
+      title:'Admin plan',agenda:'Agenda',scheduledFor:'2026-10-21T10:00:00.000Z'});
+    assert.equal(rpcName,'match_planned_meeting_chunks');
+     assert.equal(rpcArgs.p_planned_id,id(210));
+    assert.equal(rpcArgs.p_project_id,id(100));
+    assert.equal(rpcArgs.p_owner_id,null);
+    assert.deepEqual(result.sourceIds,[id(15)]);
+    assert.ok(result.context.excerpts.every((excerpt:any)=>excerpt.meeting_id===id(15)));
+  } finally {
+    globalThis.fetch=original;
+    if (previous===undefined) Deno.env.delete('GEMINI_API_KEY'); else Deno.env.set('GEMINI_API_KEY',previous);
+  }
 });
 
 Deno.test('auth: exact service secret, user verification, role lookup and user-scoped client', async () => {

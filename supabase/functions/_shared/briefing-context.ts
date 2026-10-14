@@ -2,7 +2,7 @@ import { ContextError, estimateTokens, requireDb, sha256, stringList } from './c
 import { embedTexts, embeddingConfig } from './gemini.ts';
 
 export interface BriefingScope {
-  projectId: string; meetingId: string | null; ownerId: string | null;
+  projectId: string; meetingId: string | null; plannedMeetingId: string | null; ownerId: string | null;
   title: string; agenda: string; scheduledFor: string | null;
 }
 export interface ContextData {
@@ -75,8 +75,8 @@ export function rankChunks(chunks: any[], now = Date.now()): any[] {
 function scopeQuery(query: any, scope: BriefingScope, joined = false): any {
   const prefix = joined ? 'meetings.' : '';
   query = query.eq(`${prefix}project_id`, scope.projectId).in(`${prefix}status`, ['summarized', 'completed']);
-  if (scope.meetingId) {
-    query = query.neq(joined ? 'meeting_id' : 'id', scope.meetingId);
+  if (scope.meetingId || scope.plannedMeetingId) {
+    if (scope.meetingId) query = query.neq(joined ? 'meeting_id' : 'id', scope.meetingId);
     query = scope.ownerId ? query.eq(`${prefix}user_id`, scope.ownerId) : query.is(`${prefix}user_id`, null);
   }
   return query;
@@ -99,8 +99,10 @@ export async function buildBriefingContext(admin: any, scope: BriefingScope) {
   const [a, b, taskResult] = await Promise.all([dated, undated, taskQuery]);
   requireDb(a.error || b.error || taskResult.error, 'Relational context lookup');
   const meetings = [...a.data, ...b.data].sort((x, y) => String(dateOf(y)).localeCompare(String(dateOf(x))) || String(x.id).localeCompare(String(y.id))).slice(0, 13);
-  const context = packRelationalContext({ project: project.name, client: project.clients?.name || '',
-    title: scope.title, agenda: scope.agenda, scheduled_for: scope.scheduledFor }, taskResult.data, meetings, budget);
+  const target = { project: project.name, client: project.clients?.name || '',
+    title: scope.title, agenda: scope.agenda, scheduled_for: scope.scheduledFor,
+    ...(scope.plannedMeetingId ? { planned_meeting_id: scope.plannedMeetingId } : {}) };
+  const context = packRelationalContext(target, taskResult.data, meetings, budget);
   let vectorFallback = false;
   try {
     // Do not call embeddings at all when there is no eligible indexed history.
@@ -114,10 +116,15 @@ export async function buildBriefingContext(admin: any, scope: BriefingScope) {
         ...context.recent_meetings.flatMap((m) => m.open_questions)].join('\n').slice(0, 8000);
       // Leave time for relational-only text generation within an edge invocation.
       const [query] = await embedTexts([queryText || project.name], 'RETRIEVAL_QUERY', 20000);
-      const { data, error } = await admin.rpc('match_transcript_chunks', {
+      const rpcName = scope.plannedMeetingId ? 'match_planned_meeting_chunks' : 'match_transcript_chunks';
+      const rpcArgs = scope.plannedMeetingId ? {
+        p_planned_id: scope.plannedMeetingId, p_project_id: scope.projectId,
+        p_owner_id: scope.ownerId, p_query: JSON.stringify(query), p_limit: 24,
+      } : {
         p_project_id: scope.projectId, p_query: JSON.stringify(query), p_owner_id: scope.meetingId ? scope.ownerId : null,
         p_exclude_meeting_id: scope.meetingId, p_limit: 24,
-      });
+      };
+      const { data, error } = await admin.rpc(rpcName, rpcArgs);
       requireDb(error, 'Vector retrieval');
       const model = embeddingConfig().model;
       for (const chunk of rankChunks((data || []).filter((c: any) => c.embedding_model === model))) {
@@ -139,7 +146,11 @@ export async function buildBriefingContext(admin: any, scope: BriefingScope) {
   }
   const usedTasks = taskResult.data.filter((t: any) => context.open_tasks.some((entry) => entry.task_id === t.id))
     .map((t: any) => ({ id: t.id, status: t.status, updated_at: t.updated_at })).sort((x: any, y: any) => x.id.localeCompare(y.id));
-  const inputHash = await sha256(JSON.stringify({ scope, sources: versions, tasks: usedTasks, context, version: 1 }));
+  // Keep legacy meeting-target cache hashes stable; planned targets add their
+  // explicit identity and use a new hash version.
+  const hashScope = scope.plannedMeetingId ? scope : (({ plannedMeetingId: _plannedMeetingId, ...legacy }) => legacy)(scope);
+  const inputHash = await sha256(JSON.stringify({ scope: hashScope, sources: versions, tasks: usedTasks, context,
+    version: scope.plannedMeetingId ? 2 : 1 }));
   return { context, inputHash, sourceIds: ids, tokenEstimate: estimateTokens(briefingPrompt(context)), vectorFallback };
 }
 

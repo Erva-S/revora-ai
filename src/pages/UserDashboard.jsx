@@ -30,9 +30,13 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
   const [micActive, setMicActive] = useState(false);
   const [meetingsList, setMeetingsList] = useState([]);
+  const [plannedMeetingsList, setPlannedMeetingsList] = useState([]);
+  const [loadingPlannedMeetings, setLoadingPlannedMeetings] = useState(true);
+  const [plannedMeetingsError, setPlannedMeetingsError] = useState('');
   const [briefingsList, setBriefingsList] = useState([]);
   const [loadingMeetings, setLoadingMeetings] = useState(true);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
+  const [linkedPlannedMeeting, setLinkedPlannedMeeting] = useState(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
   // Meeting Creation State
@@ -48,6 +52,17 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
   // Archive Modal State
   const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
   const [archiveSearch, setArchiveSearch] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLinkedPlannedMeeting(null);
+    if (!selectedMeeting?.id) return () => { cancelled = true; };
+    supabase.from('planned_meetings').select('*').eq('linked_meeting_id', selectedMeeting.id).maybeSingle()
+      .then(({ data, error: lookupError }) => {
+        if (!cancelled && !lookupError) setLinkedPlannedMeeting(data || null);
+      });
+    return () => { cancelled = true; };
+  }, [selectedMeeting?.id]);
 
   // Derive active tab from location pathname or defaultTab prop
   const currentPath = location.pathname;
@@ -102,9 +117,34 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     }
   };
 
+  // RLS limits this read to planned meetings assigned to the signed-in user.
+  // The legacy schedule flow above remains unchanged.
+  const fetchPlannedMeetings = async () => {
+    try {
+      setLoadingPlannedMeetings(true);
+      const { data, error } = await supabase
+        .from('planned_meetings')
+        .select('*')
+        .eq('status', 'planned')
+        .gte('scheduled_for', new Date().toISOString())
+        .order('scheduled_for', { ascending: true })
+        .limit(8);
+      if (error) throw error;
+      setPlannedMeetingsList(data || []);
+      setPlannedMeetingsError('');
+    } catch (err) {
+      console.warn('Planned meetings query notice:', err);
+      setPlannedMeetingsList([]);
+      setPlannedMeetingsError(err.message || 'Upcoming planned meetings are unavailable.');
+    } finally {
+      setLoadingPlannedMeetings(false);
+    }
+  };
+
   useEffect(() => {
     fetchMeetings();
     fetchBriefings();
+    fetchPlannedMeetings();
 
     let channel = null;
     try {
@@ -377,6 +417,35 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               briefings={briefingsList}
               onSelectMeeting={(m) => setSelectedMeeting(m)}
             />
+
+            {/* Read-only planned meetings feed. Visibility is enforced by the planned_meetings RLS policy. */}
+            <section className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-outfit font-bold text-lg text-black">Upcoming Planned Meetings</h3>
+                  <p className="text-xs text-black/50">Briefings prepared for meetings shared with you.</p>
+                </div>
+                {plannedMeetingsList.length > 0 && <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 text-[#0084FF]">
+                  {plannedMeetingsList.length} upcoming
+                </span>}
+              </div>
+              {plannedMeetingsError && <p className="text-xs text-black/50">Upcoming planned meetings are unavailable until the planned-meetings migration is installed.</p>}
+              {!plannedMeetingsError && loadingPlannedMeetings && <p role="status" className="text-xs text-black/50">Loading upcoming planned meetings…</p>}
+              {!plannedMeetingsError && !loadingPlannedMeetings && plannedMeetingsList.length === 0 && <div className="p-5 rounded-2xl bg-white border border-black/10 text-center text-xs text-black/50">
+                No upcoming planned meetings have been shared with you.
+              </div>}
+              {!plannedMeetingsError && plannedMeetingsList.map((plannedMeeting) => <div key={plannedMeeting.id} className="p-4 rounded-2xl bg-white border border-black/10 shadow-xs space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h4 className="font-bold text-sm text-black">{plannedMeeting.title || 'Planned meeting'}</h4>
+                    <p className="text-xs text-black/50 font-mono">{new Date(plannedMeeting.scheduled_for).toLocaleString()}</p>
+                  </div>
+                   <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase bg-sky-50 text-[#0084FF] border border-sky-100">Planned</span>
+                </div>
+                {plannedMeeting.agenda && <p className="text-xs text-black/70 leading-relaxed">{plannedMeeting.agenda}</p>}
+                <ContextBriefingSection key={`${plannedMeeting.id}:${plannedMeeting.updated_at || ''}`} plannedMeeting={plannedMeeting} />
+              </div>)}
+            </section>
 
             {/* Live Pre-Meeting Briefing Feed with Archive Button */}
             <section className="space-y-4">
@@ -863,9 +932,13 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                 </button>
               </div>
 
-              <ContextBriefingSection key={`${selectedMeeting.id}:${selectedMeeting.project_id || ''}`} meeting={selectedMeeting} />
+               <ContextBriefingSection key={`${selectedMeeting.id}:${selectedMeeting.project_id || ''}`} meeting={selectedMeeting} />
+               {linkedPlannedMeeting && <section className="space-y-2">
+                 <h4 className="text-xs font-bold text-black uppercase tracking-wider">Pre-meeting briefing</h4>
+                 <ContextBriefingSection key={`planned:${linkedPlannedMeeting.id}`} plannedMeeting={linkedPlannedMeeting} readOnly />
+               </section>}
 
-              {(selectedMeeting.bot_id || selectedMeeting.recording_url) && <MeetingRecordingLink key={selectedMeeting.id} meeting={selectedMeeting} />}
+               {(selectedMeeting.bot_id || selectedMeeting.recording_url) && <MeetingRecordingLink key={selectedMeeting.id} meeting={selectedMeeting} />}
 
               {selectedMeeting.summary && (
                 <div className="space-y-2">

@@ -7,6 +7,8 @@ import { pipelineRpc } from './pipeline-fakes.ts';
 const userId='00000000-0000-4000-8000-000000000001';
 const botId='00000000-0000-4000-8000-000000000002';
 const meetingId='00000000-0000-4000-8000-000000000003';
+const projectId='00000000-0000-4000-8000-000000000004';
+const plannedMeetingId='00000000-0000-4000-8000-000000000005';
 const req=(method='POST')=>new Request(`https://local.test/deploy-bot?bot_id=${botId}`,{method,headers:{Authorization:'Bearer test-user'},
   ...(method==='POST'?{body:JSON.stringify({meetingUrl:'https://meet.google.com/abc-defg-hij',title:'Test meeting'})}:{})});
 async function environment(run:()=>Promise<void>){
@@ -45,6 +47,76 @@ Deno.test('real dispatch handler sends one valid v2 bot configuration and persis
   const response=await handler(req());assert.equal(response.status,200);
   const result=await response.json();assert.equal(result.bot_name,'Test Assistant');assert.equal(result.meeting_id,meetingId);
   assert.ok(!JSON.stringify(result).includes('test-provider-secret'));assert.equal(dispatches,1);assert.equal(inserts,1);
+ }));
+
+Deno.test('planned deployment validates before dispatches, inherits fields, and reports non-fatal link failure',()=>environment(async()=>{
+  const order:string[]=[]; let dispatched=false;
+  const planned={id:plannedMeetingId,project_id:projectId,user_id:userId,title:'Planned title',agenda:'Planned agenda',
+    scheduled_for:'2026-10-20T10:00:00Z',meeting_url:'https://meet.google.com/planned',status:'planned',linked_meeting_id:null};
+  globalThis.fetch=async(input,init)=>{
+    const url=String(input); const auth=authResponse(url); if(auth)return auth;
+    if(url.includes('/planned_meetings')) {
+      order.push('planned-read');
+      assert.equal(new URL(url).searchParams.get('select'),
+        'id,project_id,user_id,title,agenda,scheduled_for,meeting_url,status,linked_meeting_id');
+      return Response.json(planned);
+    }
+    if(url.includes('/projects')) return Response.json({id:projectId});
+    if(url==='https://provider.test/v2/bots') {
+      order.push('provider'); dispatched=true;
+      return Response.json({success:true,data:{bot_id:botId}},{status:201});
+    }
+    if(url.includes('/rpc/link_planned_meeting')) { order.push('planned-link'); return Response.json(false); }
+    if(url.includes('/meetings') && init?.method==='POST') {
+      order.push('meeting-insert'); const body=JSON.parse(String(init.body));
+      assert.equal(body.project_id,projectId); assert.equal(body.user_id,userId); assert.equal(body.title,'Planned title');
+      return Response.json({id:meetingId,bot_id:botId,status:'pending'},{status:201});
+    }
+    assert.ok(url.includes('/meetings'));
+    return Response.json([]);
+  };
+  const response=await handler(new Request('https://local.test/deploy-bot',{method:'POST',headers:{Authorization:'Bearer test-user'},
+    body:JSON.stringify({meeting_url:'https://meet.google.com/planned',planned_meeting_id:plannedMeetingId})}));
+  assert.equal(response.status,200); const result=await response.json();
+  assert.equal(result.success,true); assert.equal(result.planned_link,'failed'); assert.equal(result.assigned_to,userId); assert.equal(dispatched,true);
+  assert.deepEqual(order,['planned-read','provider','meeting-insert','planned-link']);
+}));
+
+Deno.test('planned deployment rejects cancelled rows before provider dispatch',()=>environment(async()=>{
+  let providerCalls=0;
+  globalThis.fetch=async(input)=>{
+    const url=String(input); const auth=authResponse(url); if(auth)return auth;
+      if(url.includes('/planned_meetings')) {
+        assert.equal(new URL(url).searchParams.get('select'),
+         'id,project_id,user_id,title,agenda,scheduled_for,meeting_url,status,linked_meeting_id');
+      return Response.json({id:plannedMeetingId,project_id:projectId,user_id:userId,title:'Cancelled',agenda:null,
+        scheduled_for:'2026-10-20T10:00:00Z',meeting_url:'https://meet.google.com/cancelled',status:'cancelled',linked_meeting_id:null});
+    }
+    if(url.includes('/v2/bots')) providerCalls++;
+    throw new Error(`unexpected call ${url}`);
+  };
+  const response=await handler(new Request('https://local.test/deploy-bot',{method:'POST',headers:{Authorization:'Bearer test-user'},
+    body:JSON.stringify({meeting_url:'https://meet.google.com/cancelled',planned_meeting_id:plannedMeetingId})}));
+  assert.equal(response.status,409); assert.equal(providerCalls,0);
+}));
+
+Deno.test('planned deployment rejects already-linked rows before provider dispatch',()=>environment(async()=>{
+  let providerCalls=0;
+  globalThis.fetch=async(input)=>{
+    const url=String(input); const auth=authResponse(url); if(auth)return auth;
+      if(url.includes('/planned_meetings')) {
+        assert.equal(new URL(url).searchParams.get('select'),
+         'id,project_id,user_id,title,agenda,scheduled_for,meeting_url,status,linked_meeting_id');
+      return Response.json({id:plannedMeetingId,project_id:projectId,user_id:userId,
+        title:'Already linked',agenda:null,scheduled_for:'2026-10-20T10:00:00Z',meeting_url:'https://meet.google.com/linked',
+        status:'linked',linked_meeting_id:meetingId});
+    }
+    if(url.includes('/v2/bots')) providerCalls++;
+    throw new Error(`unexpected call ${url}`);
+  };
+  const response=await handler(new Request('https://local.test/deploy-bot',{method:'POST',headers:{Authorization:'Bearer test-user'},
+    body:JSON.stringify({meeting_url:'https://meet.google.com/linked',planned_meeting_id:plannedMeetingId})}));
+  assert.equal(response.status,409); assert.equal(providerCalls,0);
 }));
 
 Deno.test('non-admins still cannot dispatch or eject a bot',()=>environment(async()=>{

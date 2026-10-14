@@ -56,6 +56,9 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 type AdminCaller =
   | { ok: true; userId: string }
   | { ok: false; response: Response };
+type OwnerResolution =
+  | { ownerId: string }
+  | { ownerId: null; error: string };
 
 // Bot deployment is admin-only. The caller's role is read from public.profiles
 // with the service role (the single trusted source) — never from the request
@@ -166,7 +169,7 @@ async function resolveMeetingOwner(
   serviceRoleKey: string,
   adminUserId: string,
   requestedOwnerId: unknown
-): Promise<{ ownerId: string | null; error?: string }> {
+): Promise<OwnerResolution> {
   const candidate = String(requestedOwnerId ?? '').trim();
   if (!candidate || candidate === adminUserId) {
     return { ownerId: adminUserId };
@@ -255,26 +258,94 @@ serve(async (req: Request): Promise<Response> => {
       return json({ success: false, error: 'Request body must be valid JSON' }, 400);
     }
 
-    const meetingUrl = String(payload.meeting_url || payload.meetingUrl || '').trim();
-    const title = payload.title ? String(payload.title).slice(0, 200) : 'Revora';
+    const requestedPlannedMeetingId = payload.planned_meeting_id ?? payload.plannedMeetingId;
+    const plannedMeetingId = requestedPlannedMeetingId === undefined || requestedPlannedMeetingId === null || requestedPlannedMeetingId === ''
+      ? null : String(requestedPlannedMeetingId).trim();
+    if (plannedMeetingId && !UUID_PATTERN.test(plannedMeetingId))
+      return json({ success: false, error: 'planned_meeting_id must be a valid UUID' }, 400);
+
+    let plannedMeeting: any = null;
+    if (plannedMeetingId) {
+      // Load and validate the planned row before any external provider call.
+      // This read is deliberately service-role-backed because deploy-bot is
+      // already admin-only and the row may be a legacy NULL-owner row.
+      const plannedClient = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+      const plannedResult = await plannedClient.from('planned_meetings')
+        .select('id,project_id,user_id,title,agenda,scheduled_for,meeting_url,status,linked_meeting_id')
+        .eq('id', plannedMeetingId).maybeSingle();
+      if (plannedResult.error) {
+        console.error('[Deploy-Bot] Planned meeting lookup failed:', plannedResult.error.message);
+        return json({ success: false, error: 'Unable to validate the planned meeting. Apply the planned-meetings migration first.' }, 400);
+      }
+      if (!plannedResult.data) return json({ success: false, error: 'Planned meeting not found.' }, 404);
+      plannedMeeting = plannedResult.data;
+      if (plannedMeeting.status === 'cancelled')
+        return json({ success: false, error: 'This planned meeting is cancelled.' }, 409);
+      if (plannedMeeting.status !== 'planned' || plannedMeeting.linked_meeting_id)
+        return json({ success: false, error: 'This planned meeting is already linked to a meeting.' }, 409);
+      if (!plannedMeeting.project_id)
+        return json({ success: false, error: 'The planned meeting has no project assignment.' }, 400);
+      if (!plannedMeeting.user_id)
+        return json({ success: false, error: 'Assign an owner to this planned meeting before deploying the bot.' }, 400);
+
+      // A provider bot may already be running when the post-insert CAS link
+      // fails. Admins can retry only that database link, never dispatch a
+      // second provider bot for the same planned row.
+      if (payload.retry_link === true) {
+        const retryMeetingId = String(payload.meeting_id ?? payload.retry_meeting_id ?? '').trim();
+        if (!UUID_PATTERN.test(retryMeetingId))
+          return json({ success: false, error: 'A valid meeting_id is required to retry the planned link.' }, 400);
+        const retryClient = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+        const retryMeeting = await retryClient.from('meetings').select('id').eq('id', retryMeetingId).maybeSingle();
+        if (retryMeeting.error) return json({ success: false, error: 'Unable to validate the existing meeting for link retry.' }, 400);
+        if (!retryMeeting.data) return json({ success: false, error: 'Meeting not found for planned-link retry.' }, 404);
+        const { data: linked, error: linkError } = await retryClient.rpc('link_planned_meeting', {
+          p_planned_id: plannedMeetingId,
+          p_meeting_id: retryMeetingId,
+        });
+        if (linkError || linked !== true) {
+          console.error('[Deploy-Bot] Planned meeting link retry failed:', linkError?.message || 'CAS rejected');
+          return json({ success: true, meeting_id: retryMeetingId, planned_link: 'failed' }, 200);
+        }
+        return json({ success: true, meeting_id: retryMeetingId, planned_link: 'linked' }, 200);
+      }
+    }
+
+    const meetingUrl = String(payload.meeting_url || payload.meetingUrl || plannedMeeting?.meeting_url || '').trim();
 
     if (!meetingUrl) {
       return json({ success: false, error: 'meeting_url is required' }, 400);
     }
 
+    const requestedProjectId = String(payload.project_id ?? '').trim();
+    if (requestedProjectId) {
+      if (!UUID_PATTERN.test(requestedProjectId)) return json({ success: false, error: 'project_id must be a valid UUID' }, 400);
+      if (plannedMeeting && requestedProjectId !== plannedMeeting.project_id)
+        return json({ success: false, error: 'project_id conflicts with the planned meeting.' }, 400);
+    }
+    const projectId = plannedMeeting?.project_id || requestedProjectId;
+
+    const requestedOwnerId = payload.assign_to_user_id ?? payload.assignToUserId ?? payload.owner_user_id;
+    const requestedOwner = String(requestedOwnerId ?? '').trim();
+    const plannedOwnerId = plannedMeeting ? plannedMeeting.user_id : null;
+    if (plannedMeeting && requestedOwner && requestedOwner !== plannedOwnerId)
+      return json({ success: false, error: 'The assigned owner conflicts with the planned meeting.' }, 400);
+
+    const requestedTitle = payload.title ? String(payload.title).slice(0, 200) : '';
+    const title = String(plannedMeeting?.title || requestedTitle || 'Revora').slice(0, 200) || 'Revora';
+
     const owner = await resolveMeetingOwner(
       SUPABASE_URL,
       AUTHZ_SERVICE_ROLE_KEY,
       auth.userId,
-      payload.assign_to_user_id ?? payload.assignToUserId ?? payload.owner_user_id
+      plannedOwnerId ?? requestedOwnerId
     );
     if (!owner.ownerId) {
-      return json({ success: false, error: owner.error || 'Invalid meeting owner' }, 400);
+      return json({ success: false, error: 'error' in owner ? owner.error : 'Invalid meeting owner' }, 400);
     }
     const userId: string = owner.ownerId;
 
     // Optional context assignment is verified before dispatching an external bot.
-    const projectId = String(payload.project_id ?? '').trim();
     if (projectId) {
       if (!UUID_PATTERN.test(projectId)) return json({ success: false, error: 'project_id must be a valid UUID' }, 400);
       const projectClient = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
@@ -390,6 +461,28 @@ serve(async (req: Request): Promise<Response> => {
     if (!meetingId) return json({ success: false, bot_id: botId, dispatched: true,
       error: 'The bot was dispatched, but meeting ownership could not be saved. Do not deploy a second bot; retry saving this bot in the database.' }, 503);
 
+    let plannedLink: 'linked' | 'failed' | undefined;
+    if (plannedMeetingId) {
+      try {
+        const supabaseAdmin = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+        const { data: linked, error: linkError } = await supabaseAdmin.rpc('link_planned_meeting', {
+          p_planned_id: plannedMeetingId,
+          p_meeting_id: meetingId,
+        });
+        if (linkError || linked !== true) {
+          plannedLink = 'failed';
+          console.error('[Deploy-Bot] Planned meeting link failed:', linkError?.message || 'CAS rejected');
+          pipelineLog('planned_link_failed', meetingId, botId, { http_status: 503 });
+        } else {
+          plannedLink = 'linked';
+        }
+      } catch (linkError) {
+        plannedLink = 'failed';
+        console.error('[Deploy-Bot] Planned meeting link failed:', linkError instanceof Error ? linkError.message : String(linkError));
+        pipelineLog('planned_link_failed', meetingId, botId, { http_status: 503 });
+      }
+    }
+
     return json(
       {
         success: true,
@@ -402,6 +495,7 @@ serve(async (req: Request): Promise<Response> => {
         is_simulated: false,
         meeting_url: meetingUrl,
         webhook_url: webhookUrl,
+        ...(plannedLink ? { planned_link: plannedLink } : {}),
       },
       200
     );

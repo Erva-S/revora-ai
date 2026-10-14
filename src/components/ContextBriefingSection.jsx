@@ -8,29 +8,42 @@ const SECTIONS = [
   ['unresolved_topics', 'Unresolved topics'], ['suggested_agenda', 'Suggested agenda'], ['risks', 'Risks'],
 ];
 
-export default function ContextBriefingSection({ meeting }) {
+export default function ContextBriefingSection({ meeting, plannedMeeting, readOnly = false }) {
   const [briefings, setBriefings] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [sources, setSources] = useState([]);
-  const [loading, setLoading] = useState(!!meeting?.project_id);
+  const [loading, setLoading] = useState(!!(meeting?.project_id || plannedMeeting?.project_id));
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
   const [agenda, setAgenda] = useState('');
-  const meetingId = meeting?.id;
-  const projectId = meeting?.project_id;
+  const target = plannedMeeting || meeting;
+  const isPlannedMeeting = !!plannedMeeting;
+  const targetId = target?.id;
+  const projectId = target?.project_id;
   const briefing = briefings.find((b) => b.id === selectedId) || briefings[0];
+  const plannedMeetingChanged = isPlannedMeeting && briefing?.generated_at && target?.updated_at
+    && Date.parse(target.updated_at) > Date.parse(briefing.generated_at);
 
   const load = useCallback(async () => {
-    if (!projectId) return;
+    if (!projectId || !targetId) {
+      setLoading(false);
+      setBriefings([]);
+      setSelectedId('');
+      return;
+    }
     setLoading(true);
     try {
-      const result = await supabase.from('briefings').select('*').eq('meeting_id', meetingId)
-        .eq('project_id', projectId).order('created_at', { ascending: false }).limit(10);
+      let query = supabase.from('briefings').select('*').eq('project_id', projectId);
+      query = isPlannedMeeting ? query.eq('planned_meeting_id', targetId) : query.eq('meeting_id', targetId);
+      const result = await query.order('created_at', { ascending: false }).limit(10);
       if (result.error) throw result.error;
-      setBriefings(result.data || []);
+      const nextBriefings = result.data || [];
+      setBriefings(nextBriefings);
+      setSelectedId((current) => nextBriefings.some((b) => b.id === current) ? current : (nextBriefings[0]?.id || ''));
+      setError('');
     } catch { setError('Context briefings could not be loaded. Check that the context migration is installed, then retry.'); }
     finally { setLoading(false); }
-  }, [meetingId, projectId]);
+  }, [isPlannedMeeting, projectId, targetId]);
 
   useEffect(() => {
     // Parent keys this component by meeting/project, so state starts clean.
@@ -58,9 +71,10 @@ export default function ContextBriefingSection({ meeting }) {
   const generate = async () => {
     setGenerating(true); setError('');
     try {
-      const { data, error: invokeError } = await supabase.functions.invoke('generate-briefing', {
-        body: { meeting_id: meeting.id, ...(agenda.trim() ? { agenda: agenda.trim() } : {}), refresh: !!briefing },
-      });
+      const body = isPlannedMeeting
+        ? { planned_meeting_id: target.id, refresh: !!briefing }
+        : { meeting_id: target.id, ...(agenda.trim() ? { agenda: agenda.trim() } : {}), refresh: !!briefing };
+      const { data, error: invokeError } = await supabase.functions.invoke('generate-briefing', { body });
       if (invokeError) {
         let message = invokeError.message;
         try { message = (await invokeError.context?.json())?.error || message; } catch { /* use transport message */ }
@@ -79,25 +93,32 @@ export default function ContextBriefingSection({ meeting }) {
         <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-[#0084FF]" /> Context Briefing
         </h4>
-        <button type="button" onClick={generate} disabled={!meeting?.project_id || generating || loading}
+        {!readOnly && <button type="button" onClick={generate} disabled={!projectId || !targetId || generating || loading || (isPlannedMeeting && target?.status === 'cancelled')}
           className="px-3 py-1.5 rounded-xl bg-white border border-sky-200 text-xs font-bold text-[#0084FF] disabled:opacity-50 cursor-pointer flex items-center gap-1.5">
           {generating && <RefreshCw className="w-3 h-3 animate-spin" />}
           {generating ? 'Generating…' : briefing ? 'Refresh' : 'Generate'}
-        </button>
+        </button>}
       </div>
-      {!meeting?.project_id ? <p className="text-xs text-slate-500">Assign this meeting to a project to generate a context briefing.</p> : <>
-        <label className="block text-xs text-slate-600">
+      {!targetId ? <p className="text-xs text-slate-500">This meeting does not have a briefing target yet.</p>
+        : !projectId ? <p className="text-xs text-slate-500">Assign this {isPlannedMeeting ? 'planned meeting' : 'meeting'} to a project to generate a context briefing.</p> : <>
+        {isPlannedMeeting ? <div className="rounded-xl border border-sky-100 bg-white/70 px-3 py-2 text-xs text-slate-600">
+          <span className="font-semibold text-slate-900">Agenda:</span> {target.agenda || 'No agenda provided.'}
+        </div> : <label className="block text-xs text-slate-600">
           Agenda <span className="text-slate-400">(optional)</span>
           <textarea value={agenda} onChange={(e) => setAgenda(e.target.value)} maxLength={12000} rows={2}
             placeholder="What should this briefing focus on?"
             className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-[#0084FF]" />
-        </label>
+        </label>}
+        {plannedMeetingChanged && <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          The agenda or scheduled time changed after this briefing was generated. Refresh the briefing to use the latest plan.
+        </div>}
         {loading && <p role="status" className="text-xs text-slate-500">Loading context briefings…</p>}
         {error && <div role="alert" className="flex items-start gap-2 text-xs text-amber-800 rounded-xl bg-amber-50 p-3">
           <AlertCircle className="w-4 h-4 shrink-0" /><span>{error}</span>
           <button type="button" onClick={() => { setError(''); load(); }} className="font-bold underline">Retry</button>
         </div>}
         {!loading && !briefing && !error && <p className="text-xs text-slate-500">No context briefing yet. Generate one from this project’s eligible meeting history.</p>}
+        {isPlannedMeeting && target.status === 'cancelled' && <p className="text-xs text-slate-500">This planned meeting is cancelled. Existing briefing history remains available.</p>}
         {briefings.length > 1 && <label className="block text-xs text-slate-600">Saved briefings (latest first)
           <select value={briefing?.id || ''} onChange={(e) => setSelectedId(e.target.value)}
             className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 text-xs">

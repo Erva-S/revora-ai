@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import AdminMeetingsPanel from '../components/AdminMeetingsPanel';
+import PlannedMeetingsPanel from '../components/PlannedMeetingsPanel';
 import { 
   ShieldCheck, LogOut, Users, RefreshCw, Lock, Check, 
   Trash2, Calendar, Send, ShieldAlert, ArrowLeft, PlusCircle, X, 
@@ -16,6 +17,7 @@ export default function AdminDashboard({ onNavigateHome }) {
   const { user, logout, loading } = useAuth();
   const navigate = useNavigate();
   const [usersList, setUsersList] = useState([]);
+  const [projectsList, setProjectsList] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
   const [meetingsRefreshKey, setMeetingsRefreshKey] = useState(0);
@@ -60,9 +62,21 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
+  const fetchProjects = async () => {
+    try {
+      const { data, error } = await supabase.from('projects').select('id,name,clients(name)').order('name');
+      if (error) throw error;
+      setProjectsList(data || []);
+    } catch (err) {
+      console.warn('Failed to fetch projects list from Supabase:', err);
+      setProjectsList([]);
+    }
+  };
+
   useEffect(() => {
     if (user && user.role === 'admin') {
       fetchUsers();
+      fetchProjects();
     }
   }, [user]);
 
@@ -295,6 +309,9 @@ export default function AdminDashboard({ onNavigateHome }) {
 
         {/* Meeting Monitor */}
         <AdminMeetingsPanel refreshKey={meetingsRefreshKey} users={usersList} />
+
+        {/* Planned Meetings */}
+        <PlannedMeetingsPanel projects={projectsList} assignableUsers={usersList} currentUserId={user?.id || ''} />
 
         {/* User Directory */}
         <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-4">

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { PlusCircle, Calendar, AlignLeft, Sparkles, RefreshCw, Check, Bot, Video, ExternalLink } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { PlusCircle, Calendar, AlignLeft, Sparkles, RefreshCw, Check, Video, ExternalLink, Building2, FolderGit2, AlertCircle } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../context/AuthContext';
@@ -8,7 +8,7 @@ import MeetingBotDeployer from './MeetingBotDeployer';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
-export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUsers = [], projects = [], currentUserId = '' }) {
+export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUsers = [], projects: _projects = [], currentUserId = '' }) {
   const { user } = useAuth();
   const [activeMode, setActiveMode] = useState('schedule'); // 'schedule' | 'bot'
   const [title, setTitle] = useState('');
@@ -20,12 +20,85 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
 
+  // Client & Project selection state
+  const [clients, setClients] = useState([]);
+  const [loadingClients, setLoadingClients] = useState(true);
+  const [clientsError, setClientsError] = useState(null);
+  const [selectedClientId, setSelectedClientId] = useState('');
+
+  const [clientProjects, setClientProjects] = useState([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+
+  const fetchClients = async () => {
+    setLoadingClients(true);
+    setClientsError(null);
+    try {
+      const { data, error: rpcError } = await supabase.rpc('get_schedulable_clients');
+      if (!rpcError && data) {
+        setClients(data);
+      } else {
+        const { data: tableData, error: tableError } = await supabase
+          .from('clients')
+          .select('id, name, company')
+          .order('name');
+        if (tableError) throw tableError;
+        setClients(tableData || []);
+      }
+    } catch (err) {
+      console.warn('Failed to load clients for scheduler:', err);
+      setClientsError('Failed to load clients. Please check your connection.');
+    } finally {
+      setLoadingClients(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchClients();
+  }, []);
+
+  const handleClientChange = async (clientId) => {
+    setSelectedClientId(clientId);
+    setSelectedProjectId('');
+    setClientProjects([]);
+
+    if (!clientId) {
+      return;
+    }
+
+    setLoadingProjects(true);
+    try {
+      const { data, error: rpcError } = await supabase.rpc('get_client_projects', {
+        p_client_id: clientId,
+      });
+      if (!rpcError && data) {
+        setClientProjects(data);
+      } else {
+        const { data: tableData, error: tableError } = await supabase
+          .from('projects')
+          .select('id, name, client_id')
+          .eq('client_id', clientId)
+          .order('name');
+        if (tableError) throw tableError;
+        setClientProjects(tableData || []);
+      }
+    } catch (err) {
+      console.warn('Failed to load projects for client:', err);
+      setClientProjects([]);
+    } finally {
+      setLoadingProjects(false);
+    }
+  };
+
   const handleReset = () => {
     setTitle('');
     setRecipientEmail('');
     setScheduledAt('');
     setAgenda('');
     setMeetingUrl('');
+    setSelectedClientId('');
+    setSelectedProjectId('');
+    setClientProjects([]);
     setError(null);
   };
 
@@ -36,12 +109,22 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
       return;
     }
 
+    if (!selectedClientId) {
+      setError('Please select a Client before scheduling.');
+      return;
+    }
+
+    if (!selectedProjectId) {
+      setError('Please select a Project associated with the client before scheduling.');
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     setNotice(null);
 
     try {
-      // 1. Dispatch email briefing via Express API
+      // 1. Dispatch email briefing via Express API with verified client and project
       let emailInfo = null;
       try {
         const res = await fetch(`${API_BASE_URL}/api/briefings`, {
@@ -59,14 +142,22 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
             scheduledAt: scheduledAt || null,
             creatorEmail: user?.email || null,
             creatorUserId: currentUserId || user?.id || null,
+            clientId: selectedClientId,
+            client_id: selectedClientId,
+            projectId: selectedProjectId,
+            project_id: selectedProjectId,
           }),
         });
         if (res.ok) {
           const data = await res.json();
           emailInfo = data.emailStatus;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Server rejected meeting scheduling.');
         }
       } catch (apiErr) {
-        console.warn('Local briefing API notice:', apiErr.message);
+        console.warn('Briefing API scheduling notice:', apiErr.message);
+        throw apiErr;
       }
 
       // 2. Insert into Supabase planned_meetings for ALL attendee users + admin
@@ -92,7 +183,8 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
               agenda: agenda.trim(),
               scheduled_for: scheduledIso,
               user_id: uid,
-              project_id: projects?.[0]?.id || null,
+              client_id: selectedClientId,
+              project_id: selectedProjectId,
               meeting_url: meetingUrl.trim() || null,
               created_by: currentUserId || null,
             }))
@@ -101,7 +193,8 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
               agenda: agenda.trim(),
               scheduled_for: scheduledIso,
               user_id: currentUserId || null,
-              project_id: projects?.[0]?.id || null,
+              client_id: selectedClientId,
+              project_id: selectedProjectId,
               meeting_url: meetingUrl.trim() || null,
               created_by: currentUserId || null,
             }];
@@ -230,6 +323,98 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
       {/* Mode 1: Schedule New Meeting (Visible by default instead of the old bot card) */}
       {activeMode === 'schedule' && (
         <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4">
+          {/* Client & Project Selection Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Client Selection */}
+            <div>
+              <label className="block text-xs font-bold text-slate-800 mb-1.5 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5 text-[#0084FF]" />
+                  <span>Client Organization</span>
+                  <span className="text-red-500">*</span>
+                </span>
+                {loadingClients && (
+                  <span className="text-[10px] text-slate-400 font-normal flex items-center gap-1">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Loading...
+                  </span>
+                )}
+              </label>
+              <select
+                value={selectedClientId}
+                onChange={(e) => handleClientChange(e.target.value)}
+                required
+                disabled={loadingClients}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#0084FF] focus:ring-2 focus:ring-[#0084FF]/10 focus:outline-none text-xs text-slate-900 transition-all cursor-pointer"
+              >
+                <option value="">{loadingClients ? 'Loading clients...' : '-- Select Client Organization --'}</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} {c.company ? `(${c.company})` : ''}
+                  </option>
+                ))}
+              </select>
+              {clientsError ? (
+                <div className="flex items-center gap-1 mt-1 text-[11px] text-red-600">
+                  <AlertCircle className="w-3 h-3 shrink-0" />
+                  <span>{clientsError}</span>
+                  <button type="button" onClick={fetchClients} className="underline font-bold ml-1 cursor-pointer">Retry</button>
+                </div>
+              ) : clients.length === 0 && !loadingClients ? (
+                <p className="mt-1 text-[11px] text-amber-600">
+                  No clients found. Please create a client in Client Manager below.
+                </p>
+              ) : null}
+            </div>
+
+            {/* Project Selection */}
+            <div>
+              <label className="block text-xs font-bold text-slate-800 mb-1.5 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <FolderGit2 className="w-3.5 h-3.5 text-[#0084FF]" />
+                  <span>Associated Project</span>
+                  <span className="text-red-500">*</span>
+                </span>
+                {loadingProjects && (
+                  <span className="text-[10px] text-slate-400 font-normal flex items-center gap-1">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Loading...
+                  </span>
+                )}
+              </label>
+              <select
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                required
+                disabled={!selectedClientId || loadingProjects}
+                className={`w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs transition-all cursor-pointer ${
+                  !selectedClientId
+                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    : 'bg-slate-50 focus:bg-white focus:border-[#0084FF] focus:ring-2 focus:ring-[#0084FF]/10 focus:outline-none text-slate-900'
+                }`}
+              >
+                <option value="">
+                  {!selectedClientId
+                    ? '← First select a Client'
+                    : loadingProjects
+                    ? 'Loading projects...'
+                    : clientProjects.length === 0
+                    ? 'No projects available for this client'
+                    : '-- Select Project --'}
+                </option>
+                {clientProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              {selectedClientId && !loadingProjects && clientProjects.length === 0 && (
+                <p className="mt-1 text-[11px] text-amber-700 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3 shrink-0 text-amber-600" />
+                  <span>No projects found for this client. Please create a project under this client first.</span>
+                </p>
+              )}
+            </div>
+          </div>
+
           <div>
             <label className="block text-xs font-bold text-slate-800 mb-1.5">
               Meeting Title <span className="text-red-500">*</span>

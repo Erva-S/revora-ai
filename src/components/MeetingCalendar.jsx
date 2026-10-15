@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   ChevronLeft, ChevronRight, Calendar as CalendarIcon, 
-  Clock, Users, Video 
+  Clock, Users, Video, Building2, FolderGit2 
 } from 'lucide-react';
 
 export default function MeetingCalendar({ meetings = [], briefings = [], plannedMeetings = [], onSelectMeeting }) {
@@ -76,6 +76,8 @@ export default function MeetingCalendar({ meetings = [], briefings = [], planned
         type: 'meeting',
         status: m.status,
         attendees: m.attendees || m.meeting_url || m.recipient_email || m.recipientEmail,
+        clientName: m.clientName || m.client_name || m.clients?.name || null,
+        projectName: m.projectName || m.project_name || m.projects?.name || null,
         raw: m
       };
     }),
@@ -89,6 +91,8 @@ export default function MeetingCalendar({ meetings = [], briefings = [], planned
         type: 'briefing',
         status: b.status || 'briefing_ready',
         attendees: b.recipientEmail || b.recipient_email,
+        clientName: b.clientName || b.client_name || null,
+        projectName: b.projectName || b.project_name || null,
         raw: b
       };
     }),
@@ -102,6 +106,8 @@ export default function MeetingCalendar({ meetings = [], briefings = [], planned
         type: 'planned',
         status: p.status || 'scheduled',
         attendees: p.recipientEmail || p.recipient_email || p.meeting_url || 'Attendees',
+        clientName: p.clientName || p.client_name || p.clients?.name || null,
+        projectName: p.projectName || p.project_name || p.projects?.name || null,
         raw: p
       };
     })
@@ -262,6 +268,23 @@ export default function MeetingCalendar({ meetings = [], briefings = [], planned
                         </span>
                       )}
                     </div>
+
+                    {(evt.clientName || evt.projectName) && (
+                      <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                        {evt.clientName && (
+                          <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10px] font-semibold flex items-center gap-1">
+                            <Building2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                            <span className="truncate max-w-[100px]">{evt.clientName}</span>
+                          </span>
+                        )}
+                        {evt.projectName && (
+                          <span className="px-2 py-0.5 rounded-md bg-sky-50 text-[#0084FF] text-[10px] font-semibold flex items-center gap-1">
+                            <FolderGit2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                            <span className="truncate max-w-[100px]">{evt.projectName}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))
               ) : (

@@ -13,7 +13,7 @@ export default function MeetingProjectAssignment({ meeting, onAssigned }) {
   const load = useCallback(async () => {
     if (!available) return;
     const [p, c] = await Promise.all([
-      supabase.from('projects').select('id,name,clients(name)').order('name'),
+      supabase.from('projects').select('id,name,client_id,clients(id,name)').order('name'),
       supabase.from('clients').select('id,name').order('name'),
     ]);
     if (p.error || c.error) {
@@ -27,7 +27,19 @@ export default function MeetingProjectAssignment({ meeting, onAssigned }) {
   useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
 
   const assign = async (projectId) => {
-    const { data, error: updateError } = await supabase.from('meetings').update({ project_id: projectId || null })
+    let targetClientId = null;
+    if (projectId) {
+      const match = projects.find((p) => p.id === projectId);
+      targetClientId = match?.client_id || match?.clients?.id || null;
+      if (!targetClientId) {
+        const { data: pRec } = await supabase.from('projects').select('client_id').eq('id', projectId).maybeSingle();
+        targetClientId = pRec?.client_id || null;
+      }
+    }
+    const { data, error: updateError } = await supabase.from('meetings').update({ 
+      project_id: projectId || null,
+      client_id: targetClientId,
+    })
       .eq('id', meeting.id).select('*').single();
     if (updateError) throw updateError;
     onAssigned(data);

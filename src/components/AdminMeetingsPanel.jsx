@@ -7,7 +7,7 @@ import MeetingRecordingLink from './MeetingRecordingLink';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
 import { applyMeetingChange, isActiveMeeting, mergeMeetingRows, subscribeToMeetingChanges } from '../lib/meetingRealtime';
-import { RefreshCw, Clock, AlertCircle, Bot, Users } from 'lucide-react';
+import { RefreshCw, Clock, AlertCircle, Bot, Users, Building2, FolderGit2 } from 'lucide-react';
 
 /**
  * Admin-side meeting monitor.
@@ -52,7 +52,7 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
       if (!silent) setLoading(true);
       const { data, error: queryError } = await supabase
         .from('meetings')
-        .select('*')
+        .select('*, projects(id, name, clients(id, name)), clients(id, name)')
         .order('created_at', { ascending: false });
 
       if (queryError) throw queryError;
@@ -183,6 +183,22 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
                     <Users className="w-3 h-3 text-slate-400" />
                     Visible to: <span className="font-bold text-slate-700">{ownerLabel(m.user_id)}</span>
                   </p>
+                  {(m.clients?.name || m.projects?.clients?.name || m.projects?.name) && (
+                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                      {(m.clients?.name || m.projects?.clients?.name) && (
+                        <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10px] font-semibold flex items-center gap-1 border border-slate-200/60">
+                          <Building2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                          <span>{m.clients?.name || m.projects?.clients?.name}</span>
+                        </span>
+                      )}
+                      {m.projects?.name && (
+                        <span className="px-2 py-0.5 rounded-md bg-sky-50 text-[#0084FF] text-[10px] font-semibold flex items-center gap-1 border border-sky-100">
+                          <FolderGit2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                          <span>{m.projects.name}</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-3 text-xs shrink-0">
@@ -240,6 +256,22 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
                 <p className="text-[11px] text-slate-500 font-mono mt-0.5">
                   Stage: {meetingStageLabel(selected)} • Visible to: {ownerLabel(selected.user_id)}
                 </p>
+                {(selected.clients?.name || selected.projects?.clients?.name || selected.projects?.name) && (
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {(selected.clients?.name || selected.projects?.clients?.name) && (
+                      <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10px] font-semibold flex items-center gap-1 border border-slate-200/60">
+                        <Building2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                        <span>Client: {selected.clients?.name || selected.projects?.clients?.name}</span>
+                      </span>
+                    )}
+                    {selected.projects?.name && (
+                      <span className="px-2 py-0.5 rounded-md bg-sky-50 text-[#0084FF] text-[10px] font-semibold flex items-center gap-1 border border-sky-100">
+                        <FolderGit2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                        <span>Project: {selected.projects.name}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               <button
                 onClick={() => setSelected(null)}

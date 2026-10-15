@@ -90,6 +90,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           'x-user-email': user?.email || '',
           'x-user-id': user?.id || '',
           'x-user-role': user?.role || 'user',
+          'x-client-id': user?.clientId || user?.client_id || '',
         },
       });
       if (res.ok) {

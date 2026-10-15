@@ -1,4 +1,5 @@
 import { ContextError } from './context-utils.ts';
+import { pipelineLog } from './pipeline-log.ts';
 
 // ElevenLabs batch transcription runs directly after MeetingBaaS records the call.
 // MeetingBaaS supports ElevenLabs only in its separate WebSocket streaming API.
@@ -67,6 +68,11 @@ export function botCaptureConfig(botName: string) {
       waiting_room_timeout: timeout('BOT_WAITING_ROOM_TIMEOUT', 300, 120, 1800),
       no_one_joined_timeout: timeout('BOT_NO_ONE_JOINED_TIMEOUT', 120, 120, 1800),
       silence_timeout: timeout('BOT_SILENCE_TIMEOUT', 300, 300, 3600),
+      // MeetingBaaS owns the live participant roster. This is the short,
+      // reconnect-safe grace period it applies after every human has left;
+      // it is deliberately separate from the initial waiting-room timeout
+      // and from Zoom's browser silence timeout.
+      everyone_left_timeout: timeout('BOT_EVERYONE_LEFT_TIMEOUT', 30, 15, 600),
       // Initial timeout suppression, NOT a reconnect debounce or an exit delay.
       grace_period: 0,
     },
@@ -94,17 +100,29 @@ export async function meetingBaasRequest(path: string, method = 'GET', body?: un
   const key = sanitizeKey(Deno.env.get('MEETINGBAAS_API_KEY'));
   if (!key || /your[-_]meetingbaas/i.test(key)) throw new ContextError('MEETINGBAAS_API_KEY is not configured.');
   const url = `${meetingBaasBaseUrl()}/v2${path}`;
+  const botIdMatch = path.match(/\/bots\/([^/]+)/);
+  const botId = botIdMatch?.[1] || null;
+  const requestStarted = Date.now();
   for (let attempt = 0; attempt < attempts; attempt++) {
     let response: Response;
     try {
       response = await fetch(url, { method, headers: { 'x-meeting-baas-api-key': key, 'Content-Type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10000) });
     } catch {
+      pipelineLog('meetingbaas_request', null, botId, {
+        method, provider_path: path, duration_ms: Date.now() - requestStarted,
+        attempt: attempt + 1, attempts, retrying: attempt + 1 < attempts,
+        http_status: null,
+      });
       if (attempt + 1 === attempts) throw new ContextError('MeetingBaaS network request failed; check the bot status before retrying.', 502);
       await sleep(500 * 2 ** attempt); continue;
     }
     let result: any = null;
     try { result = await response.json(); } catch { /* do not log provider responses: they can echo BYOK secrets */ }
+    pipelineLog('meetingbaas_request', null, botId, {
+      method, provider_path: path, duration_ms: Date.now() - requestStarted,
+      attempt: attempt + 1, attempts, retrying: false, http_status: response.status,
+    });
     if (response.ok && result?.success !== false) return result?.data ?? result;
     if (response.status === 409 && method === 'POST' && path.endsWith('/leave') && result?.code === 'FST_ERR_BOT_STATUS') {
       // A conflict alone is not proof of departure; confirm the provider state.

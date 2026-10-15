@@ -327,7 +327,7 @@ export default function AdminDashboard({ onNavigateHome }) {
               <Lock className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-sm font-bold text-slate-900">Supabase Auth</div>
+              <div className="text-sm font-bold text-slate-900">Revora Auth</div>
               <div className="text-[10px] text-purple-600 font-medium flex items-center gap-1">
                 <Shield className="w-3 h-3" />
                 JWT & RLS

@@ -592,7 +592,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <div className="flex items-center justify-between pb-4 border-b border-black/5">
               <div>
                 <h3 className="font-outfit font-bold text-lg text-black">Live Meeting Summaries & Transcripts</h3>
-                <p className="text-xs text-black/50">Real-time feed connected to Supabase & MeetingBaaS</p>
+                <p className="text-xs text-black/50">Real-time feed connected to Revora AI & MeetingBaaS</p>
               </div>
 
               <div className="flex items-center gap-2">

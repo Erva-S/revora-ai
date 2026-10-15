@@ -157,7 +157,7 @@ export function AuthProvider({ children }) {
     const isConfigured = supabaseUrl && !supabaseUrl.includes('placeholder-project-id');
 
     if (!isConfigured) {
-      const msg = 'Supabase URL is not configured. Please check your environment variables.';
+      const msg = 'Authentication service is temporarily unavailable. Please try again later.';
       setError(msg);
       return { success: false, message: msg };
     }

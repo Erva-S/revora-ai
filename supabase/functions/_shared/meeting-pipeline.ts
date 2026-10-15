@@ -1024,6 +1024,15 @@ type Stage =
   | 'completed'
   | 'processing_failed';
 
+type LifecyclePatch = {
+  provider_status: string;
+  provider_status_at: string;
+  bot_joining_started_at?: string;
+  bot_joined_at?: string;
+  last_human_left_at?: string;
+  bot_departure_confirmed_at?: string;
+};
+
 /** The raw MeetingBaaS status code from a payload ('' when absent). */
 function statusCodeFrom(body: Record<string, any>): string {
   const statusObj = body?.data?.status ?? body?.status;
@@ -1067,13 +1076,14 @@ function isMeetingEndedCode(code: string): boolean {
 
 export function mapStatusChangeToStatus(
   body: Record<string, any>,
-): { status: 'pending' | 'recording' | 'failed'; processing_stage: Stage; error_message?: string; ended_at?: string } | null {
+): { status: 'pending' | 'recording' | 'failed'; processing_stage: Stage; error_message?: string; ended_at?: string } & LifecyclePatch | null {
   const code = statusCodeFrom(body);
   if (!code) return null;
 
   const errorMessage = body?.data?.status?.error_message || body?.data?.error_message || body?.error_message || body?.data?.error || body?.error || null;
   const occurredAt = body?.data?.status?.created_at;
   const endedAt = typeof occurredAt === 'string' && Number.isFinite(Date.parse(occurredAt)) ? occurredAt : new Date().toISOString();
+  const lifecycle: LifecyclePatch = { provider_status: code, provider_status_at: endedAt };
 
   const FAILED = [
     'waiting_room_timeout',
@@ -1093,6 +1103,7 @@ export function mapStatusChangeToStatus(
       processing_stage: 'processing_failed',
       error_message: errorMessage ? String(errorMessage) : `MeetingBaaS reported ${code}`,
       ended_at: endedAt,
+      ...lifecycle,
     };
   }
 
@@ -1100,20 +1111,28 @@ export function mapStatusChangeToStatus(
   // platform's end reason `recording_timeout` also contains "recording" and
   // must not be mistaken for a meeting that is still running.
   if (isMeetingEndedCode(code)) {
-    return { status: 'recording', processing_stage: 'meeting_ended', ended_at: endedAt };
+    return {
+      status: 'recording', processing_stage: 'meeting_ended', ended_at: endedAt,
+      ...lifecycle,
+      ...(normalizeCode(code) === 'allparticipantsleft' ? { last_human_left_at: endedAt } : {}),
+      bot_departure_confirmed_at: endedAt,
+    };
   }
 
   if (['transcribing', 'recording_succeeded', 'completed'].includes(code)) {
-    return { status: 'recording', processing_stage: 'transcript_processing' };
+    return { status: 'recording', processing_stage: 'transcript_processing', ...lifecycle };
   }
   if (['in_call_recording', 'recording_paused', 'recording_resumed', 'in_call'].includes(code)) {
-    return { status: 'recording', processing_stage: 'meeting_in_progress' };
+    return { status: 'recording', processing_stage: 'meeting_in_progress', ...lifecycle,
+      bot_joined_at: endedAt };
   }
 
   if (
     ['queued', 'pickup_delayed', 'joining_call', 'in_waiting_room', 'in_waiting_for_host', 'in_call_not_recording'].includes(code)
   ) {
-    return { status: 'pending', processing_stage: 'bot_dispatched' };
+    return { status: 'pending', processing_stage: 'bot_dispatched', ...lifecycle,
+      ...(code === 'joining_call' || code === 'in_waiting_room' || code === 'in_waiting_for_host'
+        ? { bot_joining_started_at: endedAt } : {}) };
   }
 
   return null;

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   X, ShieldCheck, LogIn, ArrowRight, UserCheck, RefreshCw, 
-  AlertCircle, Building2, Lock, Mail, Eye, EyeOff 
+  AlertCircle, Building2, Lock, Mail, Eye, EyeOff, Bot 
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -75,11 +75,11 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
           <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 bg-white/60">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#0084FF] to-[#0066CC] flex items-center justify-center text-white shadow-xs">
-                <LogIn className="w-4 h-4" />
+                <Bot className="w-4 h-4 text-white" />
               </div>
               <div>
                 <h3 className="font-outfit font-bold text-[18px] text-black leading-tight">
-                  Revora Authentication
+                  Revora Meeting Assistant
                 </h3>
                 <p className="text-[11px] text-black/50">Secure multi-role account portal</p>
               </div>
@@ -250,9 +250,9 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
             {activeTab === 'user' && (
               <div className="space-y-5">
                 <div className="text-center py-2">
-                  <h4 className="font-outfit font-bold text-lg text-black">Sign in to Revora</h4>
+                  <h4 className="font-outfit font-bold text-lg text-black">Sign in to Revora Meeting Assistant</h4>
                   <p className="text-xs text-black/60 mt-1">
-                    Authenticate securely via Supabase Google OAuth2.0
+                    Authenticate securely with your Google account
                   </p>
                 </div>
 
@@ -327,7 +327,7 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
 
           {/* Footer */}
           <div className="px-6 py-3.5 bg-neutral-50 border-t border-black/5 flex items-center justify-between text-[11px] text-black/50 font-mono">
-            <span>Supabase Auth & Database</span>
+            <span>Revora Meeting Assistant</span>
             <span>256-bit Encrypted</span>
           </div>
         </motion.div>

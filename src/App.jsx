@@ -46,6 +46,21 @@ function LandingPage({ isLoginRoute = false }) {
     }
   }, [isLoginRoute, user, loading]);
 
+  // Handle post-OAuth redirect if an intent was stored
+  useEffect(() => {
+    if (user && !loading) {
+      const intent = sessionStorage.getItem('revora_auth_intent');
+      if (intent) {
+        sessionStorage.removeItem('revora_auth_intent');
+        if (intent === 'admin' && user.role === 'admin') {
+          navigate('/admin-dashboard', { replace: true });
+        } else {
+          navigate('/dashboard', { replace: true });
+        }
+      }
+    }
+  }, [user, loading, navigate]);
+
   // If authenticated user visits /login, redirect to /dashboard
   if (isLoginRoute && user && !loading) {
     return <Navigate to={user.role === 'admin' ? '/admin-dashboard' : '/dashboard'} replace />;

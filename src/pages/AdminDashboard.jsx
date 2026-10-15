@@ -74,11 +74,15 @@ export default function AdminDashboard({ onNavigateHome }) {
   };
 
   useEffect(() => {
+    if (!loading && (!user || user.role !== 'admin')) {
+      navigate('/dashboard', { replace: true });
+      return;
+    }
     if (user && user.role === 'admin') {
       fetchUsers();
       fetchProjects();
     }
-  }, [user]);
+  }, [user, loading, navigate]);
 
   // Toggle user role in Supabase profiles
   const handleToggleRole = async (targetUserId, currentRole) => {

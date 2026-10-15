@@ -746,7 +746,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="p-4 rounded-xl bg-neutral-50 border border-black/5">
                     <span className="text-black/50 font-medium block mb-1">User Identifier</span>
-                    <span className="font-mono font-bold text-black">{user?.id || 'demo_user'}</span>
+                    <span className="font-mono font-bold text-black">{user?.id || '—'}</span>
                   </div>
                   <div className="p-4 rounded-xl bg-neutral-50 border border-black/5">
                     <span className="text-black/50 font-medium block mb-1">Account Created</span>

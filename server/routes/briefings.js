@@ -6,6 +6,7 @@ const Meeting = require('../models/Meeting');
 const supabase = require('../supabase');
 const { 
   sendScheduledBriefingEmail, 
+  sendMeetingReminderEmail,
   sendPostMeetingResultsEmail 
 } = require('../mailer');
 
@@ -297,6 +298,55 @@ router.post('/:id/results-email', async (req, res) => {
     res.json({ success: true, emailStatus });
   } catch (error) {
     console.error('Error in POST /api/briefings/:id/results-email:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/briefings/:id/reminder-email - Dispatch day-of reminder email to attendees
+router.post('/:id/reminder-email', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = (req.headers['x-user-email'] || req.query.email || '').trim().toLowerCase();
+    const userRole = (req.headers['x-user-role'] || req.query.role || '').trim().toLowerCase();
+    const userClientId = (req.headers['x-client-id'] || req.query.clientId || '').trim();
+
+    const meeting = await Meeting.findByPk(id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found.' });
+    }
+
+    const isAdmin = userRole === 'admin' || userEmail === 'evv18407@gmail.com';
+
+    // Multi-tenant check
+    if (!isAdmin && userClientId && meeting.clientId && meeting.clientId !== userClientId) {
+      return res.status(403).json({ error: 'Access denied: You are not authorized to dispatch reminders for another client.' });
+    }
+
+    const { recipients: overrideRecipients } = req.body || {};
+    const targetRecipients = overrideRecipients || meeting.recipientEmail || '';
+    const rawEmails = String(targetRecipients).split(',').map((e) => e.trim()).filter(Boolean);
+
+    if (rawEmails.length === 0) {
+      return res.status(400).json({ error: 'No recipient email addresses found for this meeting.' });
+    }
+
+    const emailStatus = await sendMeetingReminderEmail({
+      recipients: rawEmails,
+      title: meeting.title || 'Upcoming Meeting',
+      scheduledAt: meeting.scheduledAt || meeting.startTime,
+      meetingUrl: meeting.meetingUrl || null,
+      clientName: meeting.clientName || null,
+      projectName: meeting.projectName || null,
+      agenda: meeting.agenda || meeting.summaryContext || '',
+    });
+
+    if (emailStatus.dispatched) {
+      await meeting.update({ reminderSent: true });
+    }
+
+    res.json({ success: true, emailStatus, reminderSent: true });
+  } catch (error) {
+    console.error('Error in POST /api/briefings/:id/reminder-email:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -86,6 +86,14 @@ async function dispatchEmail(mailOptions) {
   }
 }
 
+function normalizeMeetingUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = String(url).trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
 /**
  * Dispatches the Pre-Meeting Briefing & Invitation Email with Join Meeting Link.
  */
@@ -112,13 +120,15 @@ async function sendScheduledBriefingEmail({
       ? new Date(scheduledAt).toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'short' })
       : 'Upcoming';
 
-    const joinButtonHtml = meetingUrl ? `
+    const cleanMeetingUrl = normalizeMeetingUrl(meetingUrl);
+
+    const joinButtonHtml = cleanMeetingUrl ? `
       <div style="margin: 24px 0 16px 0; text-align: center;">
-        <a href="${meetingUrl}" target="_blank" rel="noopener noreferrer" style="background-color: #0084FF; color: #ffffff; padding: 12px 28px; border-radius: 12px; font-weight: 700; font-size: 14px; text-decoration: none; display: inline-block; box-shadow: 0 2px 8px rgba(0, 132, 255, 0.25);">
+        <a href="${cleanMeetingUrl}" target="_blank" rel="noopener noreferrer" style="background-color: #0084FF; color: #ffffff; padding: 12px 28px; border-radius: 12px; font-weight: 700; font-size: 14px; text-decoration: none; display: inline-block; box-shadow: 0 2px 8px rgba(0, 132, 255, 0.25);">
           Join Meeting &rarr;
         </a>
-        <p style="margin-top: 10px; font-size: 11px; color: #64748b; font-family: monospace; word-break: break-all;">
-          <strong>Direct Link:</strong> <a href="${meetingUrl}" style="color: #0084FF; text-decoration: underline;">${meetingUrl}</a>
+        <p style="margin-top: 10px; font-size: 12px; color: #64748b; font-family: monospace; word-break: break-all;">
+          <strong>Direct Meeting Link:</strong> <a href="${cleanMeetingUrl}" target="_blank" rel="noopener noreferrer" style="color: #0084FF; text-decoration: underline; font-weight: 600;">${cleanMeetingUrl}</a>
         </p>
       </div>
     ` : `
@@ -161,6 +171,13 @@ async function sendScheduledBriefingEmail({
               <td style="padding: 6px 0; color: #64748b; width: 120px;"><strong>Attendees:</strong></td>
               <td style="padding: 6px 0; color: #0f172a;">${rawEmails.join(', ')}</td>
             </tr>
+            ${cleanMeetingUrl ? `
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; width: 120px;"><strong>Meeting Link:</strong></td>
+              <td style="padding: 6px 0; color: #0084FF; font-family: monospace; font-size: 13px; word-break: break-all;">
+                <a href="${cleanMeetingUrl}" target="_blank" rel="noopener noreferrer" style="color: #0084FF; text-decoration: underline; font-weight: 600;">${cleanMeetingUrl}</a>
+              </td>
+            </tr>` : ''}
           </table>
 
           ${joinButtonHtml}
@@ -216,41 +233,82 @@ async function sendMeetingReminderEmail({
 
   try {
     const formattedDate = scheduledAt
-      ? new Date(scheduledAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-      : 'In approximately 1 hour';
+      ? new Date(scheduledAt).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })
+      : 'Today';
 
-    const joinButtonHtml = meetingUrl ? `
-      <div style="margin: 20px 0; text-align: center;">
-        <a href="${meetingUrl}" target="_blank" rel="noopener noreferrer" style="background-color: #0084FF; color: #ffffff; padding: 12px 28px; border-radius: 12px; font-weight: 700; font-size: 14px; text-decoration: none; display: inline-block;">
-          Join Meeting Now &rarr;
+    const formattedTime = scheduledAt
+      ? new Date(scheduledAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      : 'Scheduled Time';
+
+    const cleanMeetingUrl = normalizeMeetingUrl(meetingUrl);
+
+    const joinButtonHtml = cleanMeetingUrl ? `
+      <div style="margin: 22px 0; text-align: center;">
+        <a href="${cleanMeetingUrl}" target="_blank" rel="noopener noreferrer" style="background-color: #0084FF; color: #ffffff; padding: 12px 28px; border-radius: 12px; font-weight: 700; font-size: 14px; text-decoration: none; display: inline-block; box-shadow: 0 2px 8px rgba(0, 132, 255, 0.25);">
+          Join Meeting &rarr;
         </a>
-        <p style="margin-top: 8px; font-size: 11px; color: #64748b; font-family: monospace;">
-          <a href="${meetingUrl}" style="color: #0084FF;">${meetingUrl}</a>
+        <p style="margin-top: 10px; font-size: 12px; color: #64748b; font-family: monospace; word-break: break-all;">
+          <strong>Direct Meeting Link:</strong> <a href="${cleanMeetingUrl}" target="_blank" rel="noopener noreferrer" style="color: #0084FF; text-decoration: underline; font-weight: 600;">${cleanMeetingUrl}</a>
         </p>
       </div>
-    ` : '';
+    ` : `
+      <div style="margin: 14px 0; padding: 12px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 10px; font-size: 12px; color: #64748b; text-align: center;">
+        No video meeting URL provided for this session.
+      </div>
+    `;
 
     const mailOptions = {
       to: rawEmails,
-      subject: `[Reminder] Starting Soon: ${title}${projectName ? ` (${projectName})` : ''}`,
+      subject: `[Reminder] Meeting Today: ${title}${projectName ? ` (${projectName})` : ''}`,
       html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #0f172a;">
-          <div style="border-bottom: 2px solid #0084FF; padding-bottom: 12px; margin-bottom: 16px;">
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 26px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff; color: #0f172a;">
+          <div style="border-bottom: 2px solid #0084FF; padding-bottom: 12px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
             <h2 style="color: #0084FF; margin: 0; font-size: 18px; font-weight: 800;">
               Revora AI &bull; Meeting Reminder
             </h2>
+            <span style="background: #eff6ff; color: #0084FF; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 20px; font-family: monospace; border: 1px solid #bfdbfe;">
+              Scheduled Today
+            </span>
           </div>
-          <p style="font-size: 14px; color: #334155; margin: 0 0 12px 0;">
-            Your scheduled meeting <strong>${title}</strong> is starting soon (${formattedDate}).
+
+          <p style="font-size: 14px; color: #1e293b; margin: 0 0 14px 0; line-height: 1.5;">
+            This is a reminder that your scheduled meeting <strong>${title}</strong> is taking place today at <strong>${formattedTime}</strong> (${formattedDate}).
           </p>
-          ${clientName ? `<p style="font-size: 13px; color: #64748b; margin: 4px 0;"><strong>Client:</strong> ${clientName} | <strong>Project:</strong> ${projectName || 'General'}</p>` : ''}
+
+          <table style="width: 100%; font-size: 13px; border-collapse: collapse; margin-bottom: 16px;">
+            ${clientName ? `
+            <tr>
+              <td style="padding: 5px 0; color: #64748b; width: 120px;"><strong>Client:</strong></td>
+              <td style="padding: 5px 0; color: #0f172a; font-weight: 600;">${clientName}</td>
+            </tr>` : ''}
+            ${projectName ? `
+            <tr>
+              <td style="padding: 5px 0; color: #64748b; width: 120px;"><strong>Project:</strong></td>
+              <td style="padding: 5px 0; color: #0f172a; font-weight: 600;">${projectName}</td>
+            </tr>` : ''}
+            <tr>
+              <td style="padding: 5px 0; color: #64748b; width: 120px;"><strong>Meeting Time:</strong></td>
+              <td style="padding: 5px 0; color: #0f172a; font-weight: 600;">${formattedTime} &bull; ${formattedDate}</td>
+            </tr>
+            ${cleanMeetingUrl ? `
+            <tr>
+              <td style="padding: 5px 0; color: #64748b; width: 120px;"><strong>Meeting Link:</strong></td>
+              <td style="padding: 5px 0; color: #0084FF; font-family: monospace; font-size: 13px; word-break: break-all;">
+                <a href="${cleanMeetingUrl}" target="_blank" rel="noopener noreferrer" style="color: #0084FF; text-decoration: underline; font-weight: 600;">${cleanMeetingUrl}</a>
+              </td>
+            </tr>` : ''}
+          </table>
+
           ${joinButtonHtml}
+
           ${agenda ? `
-          <div style="background: #f8fafc; padding: 12px; border-radius: 10px; font-size: 12px; color: #475569; border: 1px solid #e2e8f0;">
-            <strong>Agenda:</strong> ${agenda}
+          <div style="background: #f8fafc; padding: 14px; border-radius: 12px; font-size: 12px; color: #334155; border: 1px solid #e2e8f0; line-height: 1.5;">
+            <strong style="color: #0f172a; display: block; margin-bottom: 4px; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">Agenda / Topics:</strong>
+            ${agenda}
           </div>` : ''}
-          <p style="font-size: 11px; color: #94a3b8; margin-top: 20px; border-top: 1px solid #f1f5f9; padding-top: 10px;">
-            Automated reminder from Revora AI Meeting Assistant.
+
+          <p style="font-size: 11px; color: #94a3b8; margin-top: 20px; border-top: 1px solid #f1f5f9; padding-top: 12px; text-align: center;">
+            Automated day-of-meeting reminder from Revora AI Meeting Assistant.
           </p>
         </div>
       `,
@@ -290,6 +348,8 @@ async function sendPostMeetingResultsEmail({
     const formattedDate = scheduledAt
       ? new Date(scheduledAt).toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'short' })
       : 'Concluded Session';
+
+    const cleanMeetingUrl = normalizeMeetingUrl(meetingUrl);
 
     const revoraDetailsUrl = meetingId ? `${APP_URL}/meetings/${meetingId}` : `${APP_URL}/dashboard`;
 
@@ -348,11 +408,11 @@ async function sendPostMeetingResultsEmail({
               <td style="padding: 5px 0; color: #64748b; width: 130px;"><strong>Held At:</strong></td>
               <td style="padding: 5px 0; color: #0f172a;">${formattedDate}</td>
             </tr>
-            ${meetingUrl ? `
+            ${cleanMeetingUrl ? `
             <tr>
               <td style="padding: 5px 0; color: #64748b; width: 130px;"><strong>Original Meeting Link:</strong></td>
-              <td style="padding: 5px 0; color: #64748b; font-family: monospace; font-size: 12px;">
-                <span style="color: #475569;">${meetingUrl}</span>
+              <td style="padding: 5px 0; color: #0084FF; font-family: monospace; font-size: 13px; word-break: break-all;">
+                <a href="${cleanMeetingUrl}" target="_blank" rel="noopener noreferrer" style="color: #0084FF; text-decoration: underline; font-weight: 600;">${cleanMeetingUrl}</a>
               </td>
             </tr>` : ''}
           </table>

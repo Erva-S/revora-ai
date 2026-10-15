@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   X, Calendar, Clock, Video, Users, Building2, FolderGit2,
   ExternalLink, Copy, Check, AlertCircle, RefreshCw, Loader2,
-  Mail, Sparkles, FileText, CheckCircle2, Globe, ShieldCheck
+  Mail, Sparkles, FileText, CheckCircle2, Globe, ShieldCheck, Bell
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import ActionItemCard from './ActionItemCard';
@@ -89,6 +89,10 @@ export default function MeetingDetailsModal({ meeting, onClose, currentUser, onM
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [emailSending, setEmailSending] = useState(false);
+  const [reminderSending, setReminderSending] = useState(false);
+  const [reminderSentState, setReminderSentState] = useState(
+    Boolean(meeting?.reminderSent || meeting?.reminder_sent || meeting?.raw?.reminderSent || meeting?.raw?.reminder_sent)
+  );
   const [emailStatus, setEmailStatus] = useState(null);
   const [errorNotice, setErrorNotice] = useState(null);
 
@@ -240,6 +244,9 @@ export default function MeetingDetailsModal({ meeting, onClose, currentUser, onM
       if (res.ok) {
         const data = await res.json();
         setActiveMeeting((prev) => ({ ...prev, ...data }));
+        if (data.reminderSent || data.reminder_sent) {
+          setReminderSentState(true);
+        }
         if (onMeetingUpdated) onMeetingUpdated(data);
       }
     } catch (err) {
@@ -340,6 +347,45 @@ export default function MeetingDetailsModal({ meeting, onClose, currentUser, onM
       setErrorNotice(err.message || 'Error sending post-meeting email.');
     } finally {
       setEmailSending(false);
+    }
+  };
+
+  const handleDispatchReminderEmail = async () => {
+    const bId = activeMeeting.id || rawItem.id;
+    if (!bId) return;
+
+    try {
+      setReminderSending(true);
+      setErrorNotice(null);
+      setEmailStatus(null);
+
+      const res = await fetch(`${API_BASE_URL}/api/briefings/${bId}/reminder-email`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': currentUser?.email || '',
+          'x-user-id': currentUser?.id || '',
+          'x-user-role': currentUser?.role || 'user',
+          'x-client-id': currentUser?.clientId || currentUser?.client_id || '',
+        },
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to dispatch reminder email');
+      }
+
+      setReminderSentState(true);
+      setEmailStatus({
+        success: true,
+        message: 'Day-of meeting reminder email dispatched successfully to attendees!',
+        previewUrl: data.emailStatus?.previewUrl || null,
+      });
+    } catch (err) {
+      console.error('[MeetingDetailsModal] Reminder dispatch error:', err);
+      setErrorNotice(err.message || 'Error sending reminder email.');
+    } finally {
+      setReminderSending(false);
     }
   };
 
@@ -652,6 +698,66 @@ export default function MeetingDetailsModal({ meeting, onClose, currentUser, onM
                 <ActionItemCard key={idx} item={item} />
               ))}
             </div>
+          </div>
+        )}
+
+        {/* AUTOMATED EMAIL REMINDER & NOTIFICATIONS */}
+        {!isCompleted && (
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+                  <Mail className="w-3.5 h-3.5 text-[#0084FF]" />
+                  <span>Automated Email Notifications</span>
+                </div>
+                <p className="text-[11px] text-slate-500 font-mono">
+                  Scheduling confirmation sent &bull; Day-of reminder {reminderSentState ? 'dispatched' : 'scheduled'}
+                </p>
+              </div>
+
+              {reminderSentState ? (
+                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  Day-of Reminder Sent
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleDispatchReminderEmail}
+                  disabled={reminderSending}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#0084FF] font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 border border-blue-200/60"
+                >
+                  <Bell className="w-3.5 h-3.5" />
+                  <span>{reminderSending ? 'Dispatching Reminder…' : 'Send Day-of Reminder'}</span>
+                </button>
+              )}
+            </div>
+
+            {emailStatus && (
+              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{emailStatus.message}</span>
+                </span>
+                {emailStatus.previewUrl && (
+                  <a
+                    href={emailStatus.previewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] font-bold text-[#0084FF] underline shrink-0"
+                  >
+                    View Ethereal Preview &rarr;
+                  </a>
+                )}
+              </div>
+            )}
+
+            {errorNotice && (
+              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>{errorNotice}</span>
+              </div>
+            )}
           </div>
         )}
 

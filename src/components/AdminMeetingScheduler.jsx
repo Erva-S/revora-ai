@@ -208,13 +208,15 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
 
       confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
       
-      const successMsg = emailInfo?.dispatched
-        ? `Meeting scheduled & briefing email dispatched to ${recipientEmail}!`
-        : 'Meeting scheduled and AI briefing auto-dispatched to attendees!';
+      const isFallback = Boolean(emailInfo?.isFallback);
+      const successMsg = isFallback
+        ? `Meeting scheduled! (Notice: Google SMTP rejected password — Google requires an App Password for live inbox delivery). Generated preview:`
+        : `Meeting scheduled & briefing email dispatched directly to ${recipientEmail}!`;
 
       setNotice({
         text: successMsg,
         previewUrl: emailInfo?.previewUrl || null,
+        isFallback,
       });
       handleReset();
 
@@ -285,9 +287,17 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
       </div>
 
       {notice && (
-        <div className="m-5 sm:m-6 mb-0 p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800 flex items-center justify-between">
+        <div className={`m-5 sm:m-6 mb-0 p-3.5 rounded-xl border text-xs font-semibold flex items-center justify-between ${
+          notice.isFallback 
+            ? 'bg-amber-50 border-amber-200 text-amber-900' 
+            : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+        }`}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+            {notice.isFallback ? (
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            ) : (
+              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+            )}
             <span>{typeof notice === 'string' ? notice : notice.text}</span>
             {notice.previewUrl && (
               <a
@@ -303,7 +313,9 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
           </div>
           <button
             onClick={() => setNotice(null)}
-            className="text-emerald-700 hover:text-emerald-900 text-xs cursor-pointer font-bold ml-2"
+            className={`text-xs cursor-pointer font-bold ml-2 ${
+              notice.isFallback ? 'text-amber-700 hover:text-amber-900' : 'text-emerald-700 hover:text-emerald-900'
+            }`}
           >
             Dismiss
           </button>

@@ -169,3 +169,34 @@ test('7. Unauthorized client cannot dispatch results email for another client (4
   const data = await res.json();
   assert.match(data.error, /Access denied/i);
 });
+
+test('8. Day-of meeting reminder email dispatch persists reminderSent flag and includes meeting URL', async () => {
+  assert.ok(createdMeetingId, 'Prerequisite createdMeetingId missing');
+
+  const res = await fetch(`${API_BASE}/${createdMeetingId}/reminder-email`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-user-role': 'admin',
+      'x-user-email': 'evv18407@gmail.com',
+    },
+  });
+
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.ok(data.success);
+  assert.ok(data.emailStatus?.dispatched);
+  assert.equal(data.reminderSent, true);
+
+  // Verify meeting retrieval now reflects reminderSent = true
+  const checkRes = await fetch(`${API_BASE}/${createdMeetingId}`, {
+    headers: {
+      'x-user-role': 'admin',
+      'x-user-email': 'evv18407@gmail.com',
+    },
+  });
+  const meeting = await checkRes.json();
+  assert.equal(meeting.reminderSent, true);
+  assert.equal(meeting.meetingUrl, testMeetingUrl);
+});
+

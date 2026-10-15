@@ -16,7 +16,7 @@ export default function TaskExtractorModal({ isOpen, onClose }) {
     setTasks('');
 
     try {
-      const res = await fetch('http://localhost:5001/api/meetings/extract-tasks', {
+      const res = await fetch('http://localhost:5000/api/meetings/extract-tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript }),

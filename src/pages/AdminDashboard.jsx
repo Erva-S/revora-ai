@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
-import MeetingBotDeployer from '../components/MeetingBotDeployer';
+import AdminMeetingScheduler from '../components/AdminMeetingScheduler';
+import MeetingCalendar from '../components/MeetingCalendar';
 import AdminMeetingsPanel from '../components/AdminMeetingsPanel';
 import PlannedMeetingsPanel from '../components/PlannedMeetingsPanel';
 import { 
@@ -11,7 +12,7 @@ import {
   AlignLeft, Bot, Activity, Shield, Database
 } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function AdminDashboard({ onNavigateHome }) {
   const { user, logout, loading } = useAuth();
@@ -21,6 +22,33 @@ export default function AdminDashboard({ onNavigateHome }) {
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
   const [meetingsRefreshKey, setMeetingsRefreshKey] = useState(0);
+  const [adminMeetingsList, setAdminMeetingsList] = useState([]);
+  const [adminBriefingsList, setAdminBriefingsList] = useState([]);
+  const [adminPlannedMeetingsList, setAdminPlannedMeetingsList] = useState([]);
+
+  // Fetch all meetings, planned sessions, and briefings for calendar
+  const fetchCalendarData = async () => {
+    try {
+      const [meetingsRes, plannedRes] = await Promise.all([
+        supabase.from('meetings').select('*').order('created_at', { ascending: false }),
+        supabase.from('planned_meetings').select('*').order('scheduled_for', { ascending: true }),
+      ]);
+      if (!meetingsRes.error && meetingsRes.data) {
+        setAdminMeetingsList(meetingsRes.data);
+      }
+      if (!plannedRes.error && plannedRes.data) {
+        setAdminPlannedMeetingsList(plannedRes.data);
+      }
+    } catch (_) {}
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/briefings`);
+      if (res.ok) {
+        const data = await res.json();
+        setAdminBriefingsList(Array.isArray(data) ? data : []);
+      }
+    } catch (_) {}
+  };
 
   const handleSignOut = async () => {
     await logout();
@@ -81,6 +109,7 @@ export default function AdminDashboard({ onNavigateHome }) {
     if (user && user.role === 'admin') {
       fetchUsers();
       fetchProjects();
+      fetchCalendarData();
     }
   }, [user, loading, navigate]);
 
@@ -124,9 +153,10 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
-  // A freshly deployed bot inserts a meetings row; nudge the monitor to refetch
+  // A freshly deployed bot or scheduled meeting nudges monitors to refetch
   const handleBotDeployed = () => {
     setMeetingsRefreshKey((key) => key + 1);
+    fetchCalendarData();
   };
 
   // While auth status is loading, show clean light mode loading screen
@@ -308,8 +338,20 @@ export default function AdminDashboard({ onNavigateHome }) {
           </div>
         )}
 
-        {/* Bot Deployment */}
-        <MeetingBotDeployer onBotDeployed={handleBotDeployed} assignableUsers={usersList} onProjectCreated={fetchProjects} />
+        {/* Schedule Meeting & Auto-Dispatch (Admin Only) */}
+        <AdminMeetingScheduler
+          onMeetingScheduled={handleBotDeployed}
+          assignableUsers={usersList}
+          projects={projectsList}
+          currentUserId={user?.id || ''}
+        />
+
+        {/* Meeting Calendar (Synchronized across Admins & Users) */}
+        <MeetingCalendar
+          meetings={adminMeetingsList}
+          briefings={adminBriefingsList}
+          plannedMeetings={adminPlannedMeetingsList}
+        />
 
         {/* Meeting Monitor */}
         <AdminMeetingsPanel refreshKey={meetingsRefreshKey} users={usersList} />

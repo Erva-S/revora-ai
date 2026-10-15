@@ -5,7 +5,6 @@ import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
 import ContextBriefingSection from '../components/ContextBriefingSection';
 import MeetingRecordingLink from '../components/MeetingRecordingLink';
-import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import TaskExtractorModal from '../components/TaskExtractorModal';
 import AttendeePicker from '../components/AttendeePicker';
 import MeetingCalendar from '../components/MeetingCalendar';
@@ -20,7 +19,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultTab }) {
   const { user, logout } = useAuth();
@@ -274,13 +273,15 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
         {/* Primary Schedule Button & User Profile Badge */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="px-3.5 py-2 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs hover:scale-105 cursor-pointer"
-          >
-            <PlusCircle className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Schedule Meeting</span>
-          </button>
+          {user?.role === 'admin' && (
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="px-3.5 py-2 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs hover:scale-105 cursor-pointer"
+            >
+              <PlusCircle className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Schedule Meeting</span>
+            </button>
+          )}
 
           {user ? (
             <button
@@ -408,13 +409,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               <div className="absolute -right-12 -bottom-12 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
             </div>
 
-            {/* Meeting Bot Deployer Component */}
-            <MeetingBotDeployer />
-
             {/* Interactive Meeting Calendar */}
             <MeetingCalendar
               meetings={meetingsList}
               briefings={briefingsList}
+              plannedMeetings={plannedMeetingsList}
               onSelectMeeting={(m) => setSelectedMeeting(m)}
             />
 
@@ -477,7 +476,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   <Sparkles className="w-6 h-6 text-[#0084FF] mx-auto animate-pulse" />
                   <h4 className="font-bold text-sm text-black">No Pre-Meeting Briefings Scheduled Yet</h4>
                   <p className="text-xs text-black/50 max-w-[420px] mx-auto">
-                    Use the Schedule Meeting button in the top header to automatically generate and email an AI briefing to attendees.
+                    Meetings and pre-meeting AI briefings scheduled by administrators will appear here.
                   </p>
                 </div>
               )}
@@ -760,8 +759,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           </div>
         )}
 
-        {/* Modal 1: Schedule Meeting & Auto-Dispatch Briefing */}
-        {isCreateModalOpen && (
+        {/* Modal 1: Schedule Meeting & Auto-Dispatch Briefing (Admin Only) */}
+        {user?.role === 'admin' && isCreateModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
             <div className="bg-white rounded-[28px] max-w-[560px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between pb-3 border-b border-black/5">

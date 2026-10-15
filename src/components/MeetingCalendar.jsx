@@ -4,7 +4,7 @@ import {
   Clock, Users, Video 
 } from 'lucide-react';
 
-export default function MeetingCalendar({ meetings = [], briefings = [], onSelectMeeting }) {
+export default function MeetingCalendar({ meetings = [], briefings = [], plannedMeetings = [], onSelectMeeting }) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState(new Date().getDate());
 
@@ -20,10 +20,15 @@ export default function MeetingCalendar({ meetings = [], briefings = [], onSelec
   const getEventHeldDate = (item) => {
     // 1. Direct fields
     const raw = 
+      item.scheduled_for ||
+      item.scheduledFor ||
       item.scheduledAt || 
       item.scheduled_at || 
       item.scheduledTime || 
       item.scheduled_time || 
+      item.started_at ||
+      item.startedAt ||
+      item.startTime ||
       item.meeting_time ||
       item.meetingDate ||
       item.meeting_date || 
@@ -36,7 +41,11 @@ export default function MeetingCalendar({ meetings = [], briefings = [], onSelec
 
     // 2. Look inside metadata or briefing payload object if nested
     if (item.metadata) {
-      const metaDate = item.metadata.scheduledAt || item.metadata.scheduled_at;
+      const metaDate = 
+        item.metadata.scheduled_for || 
+        item.metadata.scheduledFor || 
+        item.metadata.scheduledAt || 
+        item.metadata.scheduled_at;
       if (metaDate) {
         const parsed = new Date(metaDate);
         if (!isNaN(parsed.getTime())) return parsed;
@@ -81,6 +90,19 @@ export default function MeetingCalendar({ meetings = [], briefings = [], onSelec
         status: b.status || 'briefing_ready',
         attendees: b.recipientEmail || b.recipient_email,
         raw: b
+      };
+    }),
+    ...plannedMeetings.map((p) => {
+      const date = getEventHeldDate(p);
+      if (!date) return null;
+      return {
+        id: p.id || Math.random(),
+        title: p.title || 'Planned Meeting Briefing',
+        date,
+        type: 'planned',
+        status: p.status || 'scheduled',
+        attendees: p.recipientEmail || p.recipient_email || p.meeting_url || 'Attendees',
+        raw: p
       };
     })
   ].filter(Boolean);

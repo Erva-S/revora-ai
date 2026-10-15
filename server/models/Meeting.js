@@ -22,6 +22,18 @@ const Meeting = sequelize.define('Meeting', {
   recipientEmail: {
     type: DataTypes.STRING,
     allowNull: true
+  },
+  agenda: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  summaryContext: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  status: {
+    type: DataTypes.STRING,
+    allowNull: true
   }
 });
 

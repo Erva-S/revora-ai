@@ -13,6 +13,7 @@ import {
   Sparkles,
   Play,
   Pause,
+  Square,
   Download,
   Copy,
   Check,

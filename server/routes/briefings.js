@@ -47,50 +47,98 @@ router.post('/', async (req, res) => {
       status: 'briefing_ready',
     });
 
-    // 2. Dispatch Email Asynchronously
-    if (recipientEmail) {
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS,
-        },
-      });
+    // 2. Dispatch Email to Attendees
+    let emailStatus = { dispatched: false, error: null, previewUrl: null };
+    const rawEmails = (recipientEmail || '').split(',').map((e) => e.trim()).filter(Boolean);
 
-      const mailOptions = {
-        from: `"Revora AI Assistant" <${process.env.EMAIL_USER}>`,
-        to: recipientEmail,
-        subject: `[Pre-Meeting Briefing] ${meeting.title}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px;">
-            <h2 style="color: #0084FF; margin-top: 0;">Revora AI Pre-Meeting Intelligence Brief</h2>
-            <p style="font-size: 14px; color: #333;"><strong>Meeting:</strong> ${meeting.title}</p>
-            <p style="font-size: 14px; color: #333;"><strong>Scheduled Time:</strong> ${
-              scheduledAt ? new Date(scheduledAt).toLocaleString() : 'Upcoming'
-            }</p>
-            <hr style="border: none; border-top: 1px solid #eee; margin: 15px 0;" />
-            <h3 style="font-size: 14px; color: #111;">AI Briefing Summary:</h3>
-            <p style="background: #f4f8ff; padding: 12px; border-radius: 8px; font-size: 13px; color: #333; line-height: 1.5;">
-              ${summaryText}
-            </p>
-            <h3 style="font-size: 14px; color: #111;">Key Topics & Action Items:</h3>
-            <ul style="font-size: 13px; color: #444; padding-left: 20px;">
-              <li>Architecture & Performance Sync</li>
-              <li>API Endpoint Alignment</li>
-              <li>Deliverable Status & Blockers</li>
-            </ul>
-            <p style="font-size: 11px; color: #888; margin-top: 20px;">Automated by Revora AI Assistant Agent.</p>
-          </div>
-        `,
-      };
+    if (rawEmails.length > 0) {
+      try {
+        let transporter;
+        let senderEmail = 'assistant@revora.ai';
 
-      transporter.sendMail(mailOptions, (mailErr, info) => {
-        if (mailErr) {
-          console.warn('⚠️ Nodemailer dispatch error:', mailErr.message);
+        const smtpHost = process.env.SMTP_HOST || (process.env.EMAIL_USER?.includes('@gmail.com') ? 'smtp.gmail.com' : null);
+        const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+        const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
+        const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
+        const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+
+        if (smtpUser && smtpPass) {
+          transporter = nodemailer.createTransport({
+            host: smtpHost || 'smtp.gmail.com',
+            port: smtpPort,
+            secure: smtpSecure,
+            auth: {
+              user: smtpUser,
+              pass: smtpPass,
+            },
+            tls: {
+              rejectUnauthorized: false,
+            },
+          });
+          senderEmail = process.env.SMTP_FROM || `"Revora AI Assistant" <${smtpUser}>`;
         } else {
-          console.log('✅ Briefing email successfully dispatched:', info.response);
+          // If live SMTP credentials are not configured yet, generate an Ethereal test mailer
+          const testAccount = await nodemailer.createTestAccount();
+          transporter = nodemailer.createTransport({
+            host: 'smtp.ethereal.email',
+            port: 587,
+            secure: false,
+            auth: {
+              user: testAccount.user,
+              pass: testAccount.pass,
+            },
+          });
+          senderEmail = `"Revora AI Assistant" <${testAccount.user}>`;
         }
-      });
+
+        const mailOptions = {
+          from: senderEmail,
+          to: rawEmails, // Array of all recipient attendee emails
+          subject: `[Pre-Meeting Briefing] ${meeting.title}`,
+          html: `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
+              <div style="display: flex; align-items: center; margin-bottom: 20px;">
+                <h2 style="color: #0084FF; margin: 0; font-size: 20px;">Revora AI — Pre-Meeting Intelligence Brief</h2>
+              </div>
+              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Meeting:</strong> ${meeting.title}</p>
+              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Scheduled Time:</strong> ${
+                scheduledAt ? new Date(scheduledAt).toLocaleString() : 'Upcoming'
+              }</p>
+              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Attendees:</strong> ${rawEmails.join(', ')}</p>
+              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 16px 0;" />
+              <h3 style="font-size: 14px; color: #0f172a; margin-bottom: 8px;">AI Context & Agenda Overview:</h3>
+              <div style="background: #f0f7ff; padding: 14px; border-radius: 10px; font-size: 13px; color: #1e293b; line-height: 1.6; border: 1px solid #bae6fd;">
+                ${agenda || summaryText}
+              </div>
+              <h3 style="font-size: 14px; color: #0f172a; margin-top: 16px; margin-bottom: 8px;">Automated Objectives:</h3>
+              <ul style="font-size: 13px; color: #334155; padding-left: 20px; line-height: 1.6;">
+                <li>Real-time transcription and speaker diarization via Revora AI</li>
+                <li>Automated action item and decision tracking</li>
+                <li>Post-meeting executive summary delivery</li>
+              </ul>
+              <p style="font-size: 11px; color: #94a3b8; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 12px;">
+                Automated by Revora AI Meeting Assistant Agent.
+              </p>
+            </div>
+          `,
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+        const testUrl = nodemailer.getTestMessageUrl(info);
+        console.log('✅ Briefing email successfully dispatched to:', rawEmails.join(', '));
+        if (testUrl) {
+          console.log('🔗 Email preview URL (Ethereal test mode):', testUrl);
+        }
+
+        emailStatus = {
+          dispatched: true,
+          previewUrl: testUrl || null,
+          recipients: rawEmails,
+        };
+      } catch (mailErr) {
+        console.warn('⚠️ Email dispatch notice:', mailErr.message);
+        emailStatus = { dispatched: false, error: mailErr.message };
+      }
     }
 
     res.status(201).json({
@@ -98,6 +146,7 @@ router.post('/', async (req, res) => {
       scheduledAt: meeting.scheduledAt,
       scheduled_at: meeting.scheduledAt,
       summaryContext: summaryText,
+      emailStatus,
       status: 'Sent & Ready',
     });
   } catch (error) {

@@ -50,15 +50,15 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
--- 2. Provision the designated admin account in profiles if it exists
+-- 2. Demote all existing accounts in profiles to standard 'user'
+update public.profiles
+set role = 'user', updated_at = timezone('utc'::text, now())
+where lower(trim(email)) <> 'evv18407@gmail.com';
+
+-- 3. Provision the designated admin account as the ONLY admin in profiles
 update public.profiles
 set role = 'admin', updated_at = timezone('utc'::text, now())
 where lower(trim(email)) = 'evv18407@gmail.com';
-
--- 3. Ensure any legacy dummy admin accounts are demoted
-update public.profiles
-set role = 'user', updated_at = timezone('utc'::text, now())
-where lower(trim(email)) = 'admin@revora.ai';
 
 -- 4. Secure procedure for existing administrators to promote or demote users
 create or replace function public.set_user_role(target_email text, new_role text)

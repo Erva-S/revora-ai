@@ -2,9 +2,45 @@ require('dotenv').config();
 
 const express = require('express');
 const router = express.Router();
-const nodemailer = require('nodemailer');
 const Meeting = require('../models/Meeting');
 const supabase = require('../supabase');
+const { 
+  sendScheduledBriefingEmail, 
+  sendPostMeetingResultsEmail 
+} = require('../mailer');
+
+// Helper to format meeting response with camelCase & snake_case compatibility
+function formatMeetingJson(meetingInstance) {
+  const plain = typeof meetingInstance.toJSON === 'function' ? meetingInstance.toJSON() : meetingInstance;
+  let parsedActionItems = [];
+  try {
+    if (plain.actionItems) {
+      parsedActionItems = typeof plain.actionItems === 'string' ? JSON.parse(plain.actionItems) : plain.actionItems;
+    }
+  } catch (_) {
+    parsedActionItems = [];
+  }
+
+  return {
+    ...plain,
+    scheduledAt: plain.scheduledAt || null,
+    scheduled_at: plain.scheduledAt || null,
+    meetingUrl: plain.meetingUrl || null,
+    meeting_url: plain.meetingUrl || null,
+    clientId: plain.clientId || null,
+    client_id: plain.clientId || null,
+    clientName: plain.clientName || null,
+    client_name: plain.clientName || null,
+    projectId: plain.projectId || null,
+    project_id: plain.projectId || null,
+    projectName: plain.projectName || null,
+    project_name: plain.projectName || null,
+    summary: plain.summary || null,
+    transcript: plain.transcript || null,
+    actionItems: parsedActionItems,
+    action_items: parsedActionItems,
+  };
+}
 
 // GET /api/briefings - Fetch meetings/briefings authorized for caller
 router.get('/', async (req, res) => {
@@ -49,25 +85,7 @@ router.get('/', async (req, res) => {
           return recipients.includes(userEmail);
         });
 
-    // Ensure scheduledAt and client/project identifiers are returned consistently
-    const formattedMeetings = visibleMeetings.map((m) => {
-      const plain = m.toJSON();
-      return {
-        ...plain,
-        scheduledAt: plain.scheduledAt || null,
-        scheduled_at: plain.scheduledAt || null,
-        clientId: plain.clientId || null,
-        client_id: plain.clientId || null,
-        clientName: plain.clientName || null,
-        client_name: plain.clientName || null,
-        projectId: plain.projectId || null,
-        project_id: plain.projectId || null,
-        projectName: plain.projectName || null,
-        project_name: plain.projectName || null,
-      };
-    });
-
-    res.json(formattedMeetings);
+    res.json(visibleMeetings.map(formatMeetingJson));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -107,20 +125,7 @@ router.get('/:id', async (req, res) => {
       return res.status(403).json({ error: 'Access denied: You are not authorized to view this meeting.' });
     }
 
-    const plain = meeting.toJSON();
-    res.json({
-      ...plain,
-      scheduledAt: plain.scheduledAt || null,
-      scheduled_at: plain.scheduledAt || null,
-      clientId: plain.clientId || null,
-      client_id: plain.clientId || null,
-      clientName: plain.clientName || null,
-      client_name: plain.clientName || null,
-      projectId: plain.projectId || null,
-      project_id: plain.projectId || null,
-      projectName: plain.projectName || null,
-      project_name: plain.projectName || null,
-    });
+    res.json(formatMeetingJson(meeting));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -140,6 +145,8 @@ router.post('/', async (req, res) => {
       client_id: bodyClient_id,
       projectId: bodyProjectId,
       project_id: bodyProject_id,
+      meetingUrl: bodyMeetingUrl,
+      meeting_url: bodyMeeting_url,
     } = req.body;
 
     const authorEmail = (creatorEmail || req.headers['x-user-email'] || '').trim().toLowerCase();
@@ -188,11 +195,13 @@ router.post('/', async (req, res) => {
       project_id: verifiedProjectId 
     } = validation;
 
+    const validMeetingUrl = (bodyMeetingUrl || bodyMeeting_url || '').trim() || null;
+
     const summaryText = `Pre-meeting briefing compiled for "${title || 'New Scheduled Meeting'}". Client: ${clientName} | Project: ${projectName}. Key focus: ${
       agenda || 'Align deliverables, review API integration, and discuss upcoming milestones.'
     }`;
 
-    // 4. Save Meeting with verified relationships in SQLite
+    // 4. Save Meeting with verified relationships & meetingUrl in SQLite
     const meeting = await Meeting.create({
       title: title || 'New Scheduled Meeting',
       recipientEmail: recipientEmail || 'attendee@company.com',
@@ -206,121 +215,111 @@ router.post('/', async (req, res) => {
       clientName: clientName,
       projectId: verifiedProjectId,
       projectName: projectName,
+      meetingUrl: validMeetingUrl,
     });
 
-    // 5. Dispatch Email to Attendees
+    // 5. Dispatch Email to Attendees using mailer module
     let emailStatus = { dispatched: false, error: null, previewUrl: null };
     const rawEmails = (recipientEmail || '').split(',').map((e) => e.trim()).filter(Boolean);
 
     if (rawEmails.length > 0) {
-      try {
-        let transporter;
-        let senderEmail = 'assistant@revora.ai';
-
-        const smtpHost = process.env.SMTP_HOST || (process.env.EMAIL_USER?.includes('@gmail.com') ? 'smtp.gmail.com' : null);
-        const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
-        const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
-        const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
-        const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
-
-        if (smtpUser && smtpPass) {
-          transporter = nodemailer.createTransport({
-            host: smtpHost || 'smtp.gmail.com',
-            port: smtpPort,
-            secure: smtpSecure,
-            auth: {
-              user: smtpUser,
-              pass: smtpPass,
-            },
-            tls: {
-              rejectUnauthorized: false,
-            },
-          });
-          senderEmail = process.env.SMTP_FROM || `"Revora AI Assistant" <${smtpUser}>`;
-        } else {
-          const testAccount = await nodemailer.createTestAccount();
-          transporter = nodemailer.createTransport({
-            host: 'smtp.ethereal.email',
-            port: 587,
-            secure: false,
-            auth: {
-              user: testAccount.user,
-              pass: testAccount.pass,
-            },
-          });
-          senderEmail = `"Revora AI Assistant" <${testAccount.user}>`;
-        }
-
-        const mailOptions = {
-          from: senderEmail,
-          to: rawEmails,
-          subject: `[Pre-Meeting Briefing] ${meeting.title} (${projectName})`,
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
-              <div style="display: flex; align-items: center; margin-bottom: 20px;">
-                <h2 style="color: #0084FF; margin: 0; font-size: 20px;">Revora AI — Pre-Meeting Intelligence Brief</h2>
-              </div>
-              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Meeting:</strong> ${meeting.title}</p>
-              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Client:</strong> ${clientName}</p>
-              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Project:</strong> ${projectName}</p>
-              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Scheduled Time:</strong> ${
-                scheduledAt ? new Date(scheduledAt).toLocaleString() : 'Upcoming'
-              }</p>
-              <p style="font-size: 14px; color: #1e293b; margin: 6px 0;"><strong>Attendees:</strong> ${rawEmails.join(', ')}</p>
-              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 16px 0;" />
-              <h3 style="font-size: 14px; color: #0f172a; margin-bottom: 8px;">AI Context & Agenda Overview:</h3>
-              <div style="background: #f0f7ff; padding: 14px; border-radius: 10px; font-size: 13px; color: #1e293b; line-height: 1.6; border: 1px solid #bae6fd;">
-                ${agenda || summaryText}
-              </div>
-              <h3 style="font-size: 14px; color: #0f172a; margin-top: 16px; margin-bottom: 8px;">Automated Objectives:</h3>
-              <ul style="font-size: 13px; color: #334155; padding-left: 20px; line-height: 1.6;">
-                <li>Real-time transcription and speaker diarization via Revora AI</li>
-                <li>Automated action item and decision tracking for ${projectName}</li>
-                <li>Post-meeting executive summary delivery</li>
-              </ul>
-              <p style="font-size: 11px; color: #94a3b8; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 12px;">
-                Automated by Revora AI Meeting Assistant Agent for ${clientName}.
-              </p>
-            </div>
-          `,
-        };
-
-        const info = await transporter.sendMail(mailOptions);
-        const testUrl = nodemailer.getTestMessageUrl(info);
-        console.log('✅ Briefing email successfully dispatched to:', rawEmails.join(', '));
-        if (testUrl) {
-          console.log('🔗 Email preview URL (Ethereal test mode):', testUrl);
-        }
-
-        emailStatus = {
-          dispatched: true,
-          previewUrl: testUrl || null,
-          recipients: rawEmails,
-        };
-      } catch (mailErr) {
-        console.warn('⚠️ Email dispatch notice:', mailErr.message);
-        emailStatus = { dispatched: false, error: mailErr.message };
-      }
+      emailStatus = await sendScheduledBriefingEmail({
+        recipients: rawEmails,
+        title: meeting.title,
+        scheduledAt: scheduledAt || null,
+        meetingUrl: validMeetingUrl,
+        clientName: clientName,
+        projectName: projectName,
+        agenda: agenda || summaryText,
+        creatorEmail: authorEmail,
+      });
     }
 
     res.status(201).json({
-      ...meeting.toJSON(),
-      scheduledAt: meeting.scheduledAt,
-      scheduled_at: meeting.scheduledAt,
-      clientId: meeting.clientId,
-      client_id: meeting.clientId,
-      clientName: meeting.clientName,
-      client_name: meeting.clientName,
-      projectId: meeting.projectId,
-      project_id: meeting.projectId,
-      projectName: meeting.projectName,
-      project_name: meeting.projectName,
+      ...formatMeetingJson(meeting),
       summaryContext: summaryText,
       emailStatus,
       status: 'Sent & Ready',
     });
   } catch (error) {
     console.error('Error in POST /api/briefings:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/briefings/:id/results-email - Dispatch post-meeting summary & transcript email to attendees
+router.post('/:id/results-email', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = (req.headers['x-user-email'] || req.query.email || '').trim().toLowerCase();
+    const userId = (req.headers['x-user-id'] || req.query.userId || '').trim();
+    const userRole = (req.headers['x-user-role'] || req.query.role || '').trim().toLowerCase();
+    const userClientId = (req.headers['x-client-id'] || req.query.clientId || '').trim();
+
+    const meeting = await Meeting.findByPk(id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found.' });
+    }
+
+    const isAdmin = userRole === 'admin' || userEmail === 'evv18407@gmail.com';
+
+    // Multi-tenant check
+    if (!isAdmin && userClientId && meeting.clientId && meeting.clientId !== userClientId) {
+      return res.status(403).json({ error: 'Access denied: You are not authorized to dispatch emails for another client.' });
+    }
+
+    const { summary, actionItems, transcriptSnippet, recipients: overrideRecipients } = req.body;
+
+    const targetRecipients = overrideRecipients || meeting.recipientEmail || '';
+    const rawEmails = String(targetRecipients).split(',').map((e) => e.trim()).filter(Boolean);
+
+    if (rawEmails.length === 0) {
+      return res.status(400).json({ error: 'No recipient email addresses found for this meeting.' });
+    }
+
+    const emailStatus = await sendPostMeetingResultsEmail({
+      recipients: rawEmails,
+      title: meeting.title,
+      scheduledAt: meeting.scheduledAt,
+      meetingUrl: meeting.meetingUrl,
+      clientName: meeting.clientName,
+      projectName: meeting.projectName,
+      summary: summary || meeting.summary || 'AI Executive Summary generated.',
+      actionItems: actionItems || meeting.actionItems || [],
+      transcriptSnippet: transcriptSnippet || (meeting.transcript ? meeting.transcript.slice(0, 400) + '...' : ''),
+      meetingId: meeting.id,
+    });
+
+    if (emailStatus.dispatched) {
+      await meeting.update({ resultsEmailSent: true });
+    }
+
+    res.json({ success: true, emailStatus });
+  } catch (error) {
+    console.error('Error in POST /api/briefings/:id/results-email:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PATCH /api/briefings/:id/results - Sync post-meeting summary, transcript, and action items
+router.patch('/:id/results', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const meeting = await Meeting.findByPk(id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found.' });
+    }
+
+    const { summary, transcript, actionItems, status } = req.body;
+    const patch = {};
+    if (summary !== undefined) patch.summary = summary;
+    if (transcript !== undefined) patch.transcript = typeof transcript === 'string' ? transcript : JSON.stringify(transcript);
+    if (actionItems !== undefined) patch.actionItems = typeof actionItems === 'string' ? actionItems : JSON.stringify(actionItems);
+    if (status !== undefined) patch.status = status;
+
+    await meeting.update(patch);
+    res.json(formatMeetingJson(meeting));
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });

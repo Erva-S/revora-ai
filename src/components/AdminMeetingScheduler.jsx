@@ -146,6 +146,8 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
             client_id: selectedClientId,
             projectId: selectedProjectId,
             project_id: selectedProjectId,
+            meetingUrl: meetingUrl.trim() || null,
+            meeting_url: meetingUrl.trim() || null,
           }),
         });
         if (res.ok) {

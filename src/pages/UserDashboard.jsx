@@ -8,6 +8,7 @@ import MeetingRecordingLink from '../components/MeetingRecordingLink';
 import TaskExtractorModal from '../components/TaskExtractorModal';
 import AttendeePicker from '../components/AttendeePicker';
 import MeetingCalendar from '../components/MeetingCalendar';
+import MeetingDetailsModal from '../components/MeetingDetailsModal';
 import ActionItemCard, { readActionItem } from '../components/ActionItemCard';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
@@ -15,7 +16,7 @@ import { applyMeetingChange, mergeMeetingRows, subscribeToMeetingChanges } from 
 import { 
   LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
-  Layers, Search, AlertCircle, Key,
+  Layers, Search, AlertCircle, Key, Video,
   LayoutDashboard, Settings, User as UserIcon, LogIn, Building2
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -48,6 +49,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     recipientEmail: '',
     agenda: '',
     scheduledAt: '',
+    meetingUrl: '',
   });
 
   // Archive Modal State
@@ -239,13 +241,15 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           scheduledAt: meetingFormData.scheduledAt,
           creatorEmail: user?.email,
           creatorUserId: user?.id,
+          meetingUrl: meetingFormData.meetingUrl?.trim() || null,
+          meeting_url: meetingFormData.meetingUrl?.trim() || null,
         }),
       });
 
       if (!res.ok) throw new Error('Failed to schedule meeting briefing');
 
       confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
-      setMeetingFormData({ title: '', recipientEmail: '', agenda: '', scheduledAt: '' });
+      setMeetingFormData({ title: '', recipientEmail: '', agenda: '', scheduledAt: '', meetingUrl: '' });
       setIsCreateModalOpen(false);
 
       await fetchBriefings();
@@ -477,6 +481,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               briefings={briefingsList}
               plannedMeetings={plannedMeetingsList}
               onSelectMeeting={(m) => setSelectedMeeting(m)}
+              currentUser={user}
             />
 
             {/* Read-only planned meetings feed. Visibility is enforced by the planned_meetings RLS policy. */}
@@ -896,6 +901,20 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   />
                 </div>
 
+                <div>
+                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
+                    <Video className="w-3.5 h-3.5 text-[#0084FF]" />
+                    <span>Meeting Video URL (Optional)</span>
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://meet.google.com/xxx-xxxx-xxx or Zoom / Teams URL"
+                    value={meetingFormData.meetingUrl || ''}
+                    onChange={(e) => setMeetingFormData({ ...meetingFormData, meetingUrl: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
+                  />
+                </div>
+
                 <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-black/5">
                   <button
                     type="button"
@@ -979,88 +998,15 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
         {/* Modal 3: Selected Meeting Details Modal */}
         {selectedMeeting && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-            <div className="bg-white rounded-[28px] max-w-[640px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[85vh] overflow-y-auto">
-              <div className="flex items-center justify-between pb-4 border-b border-black/5">
-                <div>
-                  <h3 className="font-outfit font-bold text-xl text-black">
-                    {selectedMeeting.title || 'Meeting Summary & AI Insights'}
-                  </h3>
-                  <p className="text-xs text-black/50 font-mono mt-0.5">
-                    Bot ID: {selectedMeeting.bot_id} • {selectedMeeting.meeting_url}
-                  </p>
-                </div>
-                <button
-                  onClick={handleCloseMeetingModal}
-                  className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
-
-               <ContextBriefingSection key={`${selectedMeeting.id}:${selectedMeeting.project_id || ''}`} meeting={selectedMeeting} />
-               {linkedPlannedMeeting && <section className="space-y-2">
-                 <h4 className="text-xs font-bold text-black uppercase tracking-wider">Pre-meeting briefing</h4>
-                 <ContextBriefingSection key={`planned:${linkedPlannedMeeting.id}`} plannedMeeting={linkedPlannedMeeting} readOnly />
-               </section>}
-
-               {(selectedMeeting.bot_id || selectedMeeting.recording_url) && <MeetingRecordingLink key={selectedMeeting.id} meeting={selectedMeeting} />}
-
-              {selectedMeeting.summary && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Executive Summary</h4>
-                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
-                    {selectedMeeting.summary}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.transcript && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
-                    <span className="text-[11px] font-mono text-black/50">
-                      {transcriptParagraphs(selectedMeeting).length} dialogue turns • {selectedMeeting.transcript.length} characters
-                    </span>
-                  </div>
-                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[350px] overflow-y-auto shadow-inner">
-                    {transcriptDisplayText(selectedMeeting)}
-                  </div>
-                </div>
-              )}
-
-              {Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Assigned Action Items</h4>
-                  <div className="space-y-2">
-                    {selectedMeeting.action_items.map((item, idx) => (
-                      <ActionItemCard key={idx} item={item} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.error_message && (
-                <div className="flex items-start gap-2.5 p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-800 leading-relaxed">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
-                  <span>{selectedMeeting.error_message}</span>
-                </div>
-              )}
-
-              {!selectedMeeting.summary &&
-                !selectedMeeting.transcript &&
-                !selectedMeeting.error_message &&
-                !(Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0) && (
-                  <div className="flex items-center gap-2.5 p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/60">
-                    <Clock className="w-4 h-4 shrink-0 text-[#0084FF]" />
-                    <span>
-                      No AI insights yet. Summary, transcript, and action items appear here automatically once the meeting
-                      ends and processing completes.
-                    </span>
-                  </div>
-                )}
-            </div>
-          </div>
+          <MeetingDetailsModal
+            meeting={selectedMeeting}
+            onClose={handleCloseMeetingModal}
+            currentUser={user}
+            onMeetingUpdated={(updated) => {
+              setSelectedMeeting((prev) => ({ ...prev, ...updated }));
+              setMeetingsList((prev) => prev.map((m) => m.id === updated.id ? { ...m, ...updated } : m));
+            }}
+          />
         )}
 
         {/* Modal: Access Denied / Inaccessible Meeting for Direct Route */}

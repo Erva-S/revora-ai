@@ -1,52 +1,59 @@
-const cron = require('node-cron');
 const sequelize = require('./db');
-const { sendBriefingEmail } = require('./mailer');
+const { sendMeetingReminderEmail } = require('./mailer');
+
+const checkUpcomingMeetings = async () => {
+  try {
+    const [meetings] = await sequelize.query(`
+      SELECT * FROM Meetings 
+      WHERE (reminderSent IS NULL OR reminderSent = 0)
+        AND (scheduledAt IS NOT NULL OR startTime IS NOT NULL)
+    `);
+
+    const now = new Date();
+    const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+
+    for (const meeting of meetings) {
+      const rawTime = meeting.scheduledAt || meeting.startTime;
+      const meetingTime = new Date(rawTime);
+
+      if (!isNaN(meetingTime.getTime()) && meetingTime > now && meetingTime <= oneHourLater) {
+        console.log(`[Scheduler] 1-hour pre-meeting window matched for: "${meeting.title}" (ID: ${meeting.id})`);
+
+        const recipients = (meeting.recipientEmail || '')
+          .split(',')
+          .map((e) => e.trim())
+          .filter(Boolean);
+
+        if (recipients.length > 0) {
+          await sendMeetingReminderEmail({
+            recipients,
+            title: meeting.title || 'Upcoming Meeting',
+            scheduledAt: rawTime,
+            meetingUrl: meeting.meetingUrl || null,
+            clientName: meeting.clientName || null,
+            projectName: meeting.projectName || null,
+            agenda: meeting.agenda || meeting.summaryContext || '',
+          });
+        }
+
+        // Mark reminderSent = 1 so it never duplicates
+        await sequelize.query(
+          `UPDATE Meetings SET reminderSent = 1 WHERE id = ${meeting.id}`
+        );
+        console.log(`[Scheduler] Marked reminderSent = 1 for meeting ID ${meeting.id}`);
+      }
+    }
+  } catch (error) {
+    console.error('[Scheduler] Error checking upcoming meeting reminders:', error.message);
+  }
+};
 
 const startScheduler = () => {
-  cron.schedule('* * * * *', async () => {
-    console.log('[Scheduler] Checking for upcoming meetings...');
-
-    try {
-      // First, ensure the reminderSent column exists in the table
-      await sequelize.query(`
-        ALTER TABLE Meetings ADD COLUMN reminderSent BOOLEAN DEFAULT 0;
-      `).catch(() => {
-        // Ignores error if column already exists
-      });
-
-      // Fetch meetings that fall in the window and haven't had a reminder sent yet (reminderSent = 0 or NULL)
-      const [meetings] = await sequelize.query(`
-        SELECT * FROM Meetings 
-        WHERE (reminderSent IS NULL OR reminderSent = 0)
-      `);
-
-      const now = new Date();
-      const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
-
-      for (const meeting of meetings) {
-        const meetingTime = new Date(meeting.startTime);
-
-        // Check if meeting starts within the 1-hour window
-        if (meetingTime > now && meetingTime <= oneHourLater) {
-          console.log(`[Scheduler] 1-hour window matched for: ${meeting.title}`);
-
-          await sendBriefingEmail(
-            meeting.recipientEmail || 'test@example.com',
-            meeting.title || 'Upcoming Meeting',
-            'Here is your automated pre-meeting briefing overview.'
-          );
-
-          // Mark reminder as sent so it won't trigger again
-          await sequelize.query(
-            `UPDATE Meetings SET reminderSent = 1 WHERE id = ${meeting.id}`
-          );
-          console.log(`[Scheduler] Marked reminderSent = true for meeting ID ${meeting.id}`);
-        }
-      }
-    } catch (error) {
-      console.error('[Scheduler] Error checking meetings:', error);
-    }
-  });
+  // Check immediately on startup
+  checkUpcomingMeetings();
+  // Poll every 60 seconds
+  const intervalId = setInterval(checkUpcomingMeetings, 60 * 1000);
+  return () => clearInterval(intervalId);
 };
 
 module.exports = { startScheduler };

@@ -357,6 +357,7 @@ export default function AdminDashboard({ onNavigateHome }) {
           meetings={adminMeetingsList}
           briefings={adminBriefingsList}
           plannedMeetings={adminPlannedMeetingsList}
+          currentUser={user}
         />
 
         {/* Meeting Monitor */}

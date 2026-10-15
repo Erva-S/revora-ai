@@ -35,12 +35,30 @@ export function AuthProvider({ children }) {
         .maybeSingle();
 
       if (profile && !profileError) {
+        let clientInfo = null;
+        if (profile.client_id) {
+          try {
+            const { data: cData } = await supabase
+              .from('clients')
+              .select('id, name, email, company, contact_name')
+              .eq('id', profile.client_id)
+              .maybeSingle();
+            if (cData) clientInfo = cData;
+          } catch (cErr) {
+            console.warn('Failed to load client details:', cErr);
+          }
+        }
+
         return {
           id: authUser.id,
           email: authUser.email,
           name: profile.full_name || authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email?.split('@')[0] || 'User',
           avatar: profile.avatar_url || authUser.user_metadata?.avatar_url || null,
-          role: profile.role === 'admin' ? 'admin' : 'user',
+          role: profile.role === 'admin' ? 'admin' : (profile.role === 'client' || profile.client_id ? 'client' : 'user'),
+          clientId: profile.client_id || null,
+          clientName: clientInfo?.name || null,
+          clientCompany: clientInfo?.company || null,
+          client: clientInfo,
           createdAt: profile.created_at || authUser.created_at,
         };
       }
@@ -61,6 +79,8 @@ export function AuthProvider({ children }) {
       name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email?.split('@')[0] || 'User',
       avatar: authUser.user_metadata?.avatar_url || null,
       role: 'user',
+      clientId: null,
+      clientName: null,
       createdAt: authUser.created_at,
     };
   };
@@ -167,6 +187,32 @@ export function AuthProvider({ children }) {
     return await loginGoogle('admin');
   };
 
+  // Email/Password sign in for Clients and Users
+  const loginPassword = async (email, password) => {
+    setError(null);
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+
+      if (signInError) throw signInError;
+
+      if (data?.user) {
+        const userProfile = await fetchUserProfile(data.user);
+        persistUser(userProfile);
+        return { success: true, user: userProfile, session: data.session };
+      }
+      return { success: true, data };
+    } catch (err) {
+      console.error('Password sign in error:', err);
+      const msg = err.message || 'Invalid email or password.';
+      setError(msg);
+      return { success: false, message: msg };
+    }
+  };
+
   // Sign Out
   const logout = async () => {
     try {
@@ -192,6 +238,7 @@ export function AuthProvider({ children }) {
         setError,
         loginGoogle,
         loginAdmin,
+        loginPassword,
         logout,
         fetchUserProfile,
       }}

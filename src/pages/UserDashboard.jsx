@@ -15,7 +15,7 @@ import {
   Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
   Layers, Search, AlertCircle, Key,
-  LayoutDashboard, Settings, User as UserIcon, LogIn
+  LayoutDashboard, Settings, User as UserIcon, LogIn, Building2
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -265,9 +265,16 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               <Bot className="w-4 h-4" />
             </div>
             <span>Revora Dashboard</span>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-[#0084FF] uppercase">
-              User Portal
-            </span>
+            {user?.clientName ? (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 uppercase flex items-center gap-1">
+                <Building2 className="w-3 h-3" />
+                Client: {user.clientName}
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-[#0084FF] uppercase">
+                User Portal
+              </span>
+            )}
           </div>
         </div>
 
@@ -302,7 +309,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               )}
               <div className="hidden sm:flex flex-col text-left leading-tight">
                 <span className="font-bold text-xs text-black">{user?.name || 'Standard User'}</span>
-                <span className="text-[10px] text-black/50">{user?.email}</span>
+                <span className="text-[10px] text-black/50">
+                  {user?.clientName ? `Client: ${user.clientName}` : user?.email}
+                </span>
               </div>
             </button>
           ) : (
@@ -385,13 +394,15 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <div className="p-8 rounded-[28px] bg-gradient-to-br from-[#0084FF] to-[#0066CC] text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">
               <div className="relative z-10 max-w-[600px]">
                 <span className="px-3 py-1 rounded-full bg-white/20 text-xs font-bold uppercase tracking-wider">
-                  Authenticated Session • Role: {user?.role || 'user'}
+                  {user?.clientName ? `Client Organization: ${user.clientName} • Client Portal` : `Authenticated Session • Role: ${user?.role || 'user'}`}
                 </span>
                 <h1 className="font-outfit font-black text-[30px] sm:text-[36px] leading-tight mt-3">
                   Welcome back, {user?.name || 'User'}!
                 </h1>
                 <p className="font-sans text-sm text-white/80 mt-2 leading-relaxed">
-                  Your Revora AI assistant is active and ready to schedule meetings, transcribe live calls, and extract action items.
+                  {user?.clientName
+                    ? `Accessing your dedicated client workspace for ${user.clientName}. View your project meetings, recordings, AI briefings, and transcripts with secure data isolation.`
+                    : 'Your Revora AI assistant is active and ready to schedule meetings, transcribe live calls, and extract action items.'}
                 </p>
               </div>
 
@@ -709,9 +720,13 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                     <p className="text-xs text-black/50 font-mono">{user?.email || 'guest@revora.ai'}</p>
                     <div className="flex items-center gap-2 pt-1">
                       <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono ${
-                        user?.role === 'admin' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-[#0084FF]'
+                        user?.role === 'admin' 
+                          ? 'bg-amber-100 text-amber-800' 
+                          : user?.clientName || user?.role === 'client'
+                          ? 'bg-purple-100 text-purple-800'
+                          : 'bg-sky-100 text-[#0084FF]'
                       }`}>
-                        Role: {user?.role || 'user'}
+                        Role: {user?.clientName ? 'Client Account' : (user?.role || 'user')}
                       </span>
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700 font-mono">
                         Status: Active
@@ -748,9 +763,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                     <span className="font-mono font-bold text-black">{user?.id || '—'}</span>
                   </div>
                   <div className="p-4 rounded-xl bg-neutral-50 border border-black/5">
-                    <span className="text-black/50 font-medium block mb-1">Account Created</span>
+                    <span className="text-black/50 font-medium block mb-1">
+                      {user?.clientName ? 'Client Organization' : 'Account Created'}
+                    </span>
                     <span className="font-mono font-bold text-black">
-                      {user?.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'Active Session'}
+                      {user?.clientName ? `${user.clientName}${user.clientCompany ? ` (${user.clientCompany})` : ''}` : (user?.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'Active Session')}
                     </span>
                   </div>
                 </div>

@@ -6,10 +6,11 @@ import AdminMeetingScheduler from '../components/AdminMeetingScheduler';
 import MeetingCalendar from '../components/MeetingCalendar';
 import AdminMeetingsPanel from '../components/AdminMeetingsPanel';
 import PlannedMeetingsPanel from '../components/PlannedMeetingsPanel';
+import AdminClientManager from '../components/AdminClientManager';
 import { 
   ShieldCheck, LogOut, Users, RefreshCw, Lock, Check, 
   Trash2, Calendar, Send, ShieldAlert, ArrowLeft, PlusCircle, X, 
-  AlignLeft, Bot, Activity, Shield, Database
+  AlignLeft, Bot, Activity, Shield, Database, Building2
 } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -358,6 +359,14 @@ export default function AdminDashboard({ onNavigateHome }) {
 
         {/* Planned Meetings */}
         <PlannedMeetingsPanel projects={projectsList} assignableUsers={usersList} currentUserId={user?.id || ''} />
+
+        {/* Client Organizations & Portals Manager */}
+        <AdminClientManager
+          onClientCreated={() => {
+            fetchProjects();
+            fetchUsers();
+          }}
+        />
 
         {/* User Directory */}
         <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-4">

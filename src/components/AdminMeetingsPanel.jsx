@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import ActionItemCard from './ActionItemCard';
 import ContextBriefingSection from './ContextBriefingSection';
@@ -6,6 +6,7 @@ import MeetingProjectAssignment from './MeetingProjectAssignment';
 import MeetingRecordingLink from './MeetingRecordingLink';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
+import { applyMeetingChange, isActiveMeeting, mergeMeetingRows, subscribeToMeetingChanges } from '../lib/meetingRealtime';
 import { RefreshCw, Clock, AlertCircle, Bot, Users } from 'lucide-react';
 
 /**
@@ -25,6 +26,8 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
   const [selected, setSelected] = useState(null);
   const [linkedPlannedMeeting, setLinkedPlannedMeeting] = useState(null);
   const [error, setError] = useState(null);
+  const requestVersion = useRef(0);
+  const refreshTimer = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,16 +46,18 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
     return match?.email || match?.name || userId;
   };
 
-  const fetchMeetings = async () => {
+  const fetchMeetings = async ({ silent = false } = {}) => {
+    const requestId = ++requestVersion.current;
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const { data, error: queryError } = await supabase
         .from('meetings')
         .select('*')
         .order('created_at', { ascending: false });
 
       if (queryError) throw queryError;
-      setMeetings(data || []);
+      if (requestId < requestVersion.current) return;
+      setMeetings((current) => mergeMeetingRows(current, data || []));
       setError(null);
 
       // Keep the detail modal in sync: if a meeting is currently selected,
@@ -60,53 +65,69 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
       // without closing and re-opening the modal.
       setSelected((prev) => {
         if (!prev || !data) return prev;
-        const updated = data.find((m) => m.id === prev.id);
-        return updated || prev;
+         const updated = data.find((m) => m.id === prev.id);
+         return updated || prev;
       });
     } catch (err) {
       console.error('Admin meetings query failed:', err);
       setError(err.message || 'Failed to load meetings.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   // Refetch on mount, when a bot is deployed (refreshKey bumps), and on any
   // realtime change the webhook writes while a meeting is being processed.
   useEffect(() => {
+    const scheduleRefresh = () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      refreshTimer.current = setTimeout(() => { fetchMeetings({ silent: true }); }, 250);
+    };
     fetchMeetings();
 
-    let channel = null;
-    try {
-      channel = supabase
-        .channel('admin_meetings_monitor')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => {
-          fetchMeetings();
-        })
-        .subscribe();
-    } catch (realtimeErr) {
-      console.warn('Admin realtime subscription notice:', realtimeErr);
-    }
+    const unsubscribe = subscribeToMeetingChanges('admin_meetings_monitor', {
+      onChange: (payload) => {
+        setMeetings((current) => applyMeetingChange(current, payload));
+        if (payload?.new?.id) {
+          setSelected((current) => {
+            if (!current || current.id !== payload.new.id) return current;
+            return mergeMeetingRows([current], [payload.new])[0] || current;
+          });
+        }
+        scheduleRefresh();
+      },
+      onStatus: (status, realtimeErr) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Admin realtime subscription notice:', realtimeErr?.message || status);
+          fetchMeetings({ silent: true });
+        }
+      },
+    });
+
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') fetchMeetings({ silent: true });
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    const pollId = setInterval(() => fetchMeetings({ silent: true }), 5000);
 
     return () => {
-      if (channel) {
-        try {
-          supabase.removeChannel(channel);
-        } catch (_) {}
-      }
+      unsubscribe();
+      clearInterval(pollId);
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
     };
   }, [refreshKey]);
 
-  const activeCount = meetings.filter(
-    (m) => m.status === 'pending' || m.status === 'scheduled' || m.status === 'recording'
-  ).length;
+  const activeCount = meetings.filter(isActiveMeeting).length;
 
   return (
     <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-4 font-sans">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
         <div>
           <h3 className="font-outfit font-bold text-base text-slate-900 flex items-center gap-2">
-            <Bot className="w-4 h-4 text-[#0084FF]" />
+            <img src="/revora-icon.png" alt="Revora" className="w-4 h-4 object-contain" />
             Meeting Monitor
           </h3>
           <p className="text-[11px] text-slate-500 mt-0.5">

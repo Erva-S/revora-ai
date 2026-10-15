@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Bot, Video, Loader2, CheckCircle2, AlertCircle, Sparkles, RefreshCw, ExternalLink, ChevronDown, ChevronRight, Circle, Plus, FolderPlus, X, Check } from 'lucide-react';
 import { supabase } from '../supabaseClient';
+import { subscribeToMeetingChanges } from '../lib/meetingRealtime';
 
 export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onProjectCreated }) {
   const [meetingUrl, setMeetingUrl] = useState('');
@@ -20,6 +21,7 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onP
   const [error, setError] = useState(null);
   const [botStatus, setBotStatus] = useState(null); // null | { botId, status, meetingUrl, deployedAt }
   const [showDetails, setShowDetails] = useState(false);
+  const dispatchKeyRef = useRef(null);
 
   const loadProjects = async () => {
     try {
@@ -132,6 +134,7 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onP
 
         setBotStatus((current) => {
           if (!current || current.botId !== botStatus.botId) return current;
+          if (current.updatedAt && data.updated_at && Date.parse(data.updated_at) < Date.parse(current.updatedAt)) return current;
           const nextStatus = data.status || current.status;
           return {
             ...current,
@@ -154,30 +157,39 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onP
     // Initial fetch
     syncBotState();
 
-    // Primary: Supabase Realtime — fires within ~1s of a DB change.
-    let channel = null;
-    try {
-      channel = supabase
-        .channel(`deployer_bot_${botStatus.botId}`)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'meetings', filter: `bot_id=eq.${botStatus.botId}` },
-          () => { if (!cancelled) syncBotState(); }
-        )
-        .subscribe();
-    } catch (realtimeErr) {
-      console.warn('MeetingBotDeployer realtime subscription notice:', realtimeErr);
-    }
-
-    // Fallback: relaxed 15s poll in case Realtime channel drops.
-    const intervalId = setInterval(syncBotState, 15000);
+    // Realtime updates the card immediately; a short poll and focus resync
+    // cover missed websocket events and expired browser sessions.
+    let refreshTimer = null;
+    const scheduleSync = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => { if (!cancelled) syncBotState(); }, 250);
+    };
+    const unsubscribe = subscribeToMeetingChanges(`deployer_bot_${botStatus.botId}`, {
+      filter: `bot_id=eq.${botStatus.botId}`,
+      onChange: (payload) => {
+        if (payload?.new?.bot_id === botStatus.botId) scheduleSync();
+      },
+      onStatus: (status, realtimeErr) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('MeetingBotDeployer realtime subscription notice:', realtimeErr?.message || status);
+          scheduleSync();
+        }
+      },
+    });
+    const intervalId = setInterval(syncBotState, 5000);
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') syncBotState();
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
 
     return () => {
       cancelled = true;
       clearInterval(intervalId);
-      if (channel) {
-        try { supabase.removeChannel(channel); } catch (_) {}
-      }
+      if (refreshTimer) clearTimeout(refreshTimer);
+      unsubscribe();
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
     };
   }, [botStatus?.botId]);
 
@@ -227,6 +239,7 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onP
       // user is allowed to read the results afterwards.
       const { data, error: funcError } = await supabase.functions.invoke('deploy-bot', {
         body: {
+          dispatch_key: dispatchKeyRef.current || (dispatchKeyRef.current = crypto.randomUUID()),
           meetingUrl: meetingUrl.trim(),
           ...(meetingTitle.trim() ? { title: meetingTitle.trim() } : {}),
           ...(assignToUserId ? { assign_to_user_id: assignToUserId } : {}),
@@ -284,6 +297,7 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onP
 
   const handleReset = () => {
     setBotStatus(null);
+    dispatchKeyRef.current = null;
     setMeetingUrl('');
     setMeetingTitle('');
     setProjectId('');
@@ -319,8 +333,8 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onP
     return (
       <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs font-sans">
         <div className="flex items-center gap-3 pb-4 border-b border-slate-100 mb-4">
-          <div className="w-8 h-8 rounded-xl bg-[#0084FF] flex items-center justify-center text-white shrink-0">
-            <Bot className="w-4 h-4" />
+          <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
+            <img src="/revora-icon.png" alt="Revora Bot" className="w-8 h-8 object-contain" />
           </div>
           <div>
             <h3 className="font-outfit font-bold text-base text-slate-900">Deploy Meeting Bot</h3>
@@ -598,8 +612,8 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onP
       <div className="flex items-center justify-between pb-3 border-b border-slate-100">
         <div className="flex items-center gap-3 min-w-0">
           <div className="relative shrink-0">
-            <div className="w-8 h-8 rounded-xl bg-[#0084FF] text-white flex items-center justify-center">
-              <Bot className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center">
+              <img src="/revora-icon.png" alt="Revora Assistant" className="w-8 h-8 object-contain" />
             </div>
             {isActive && (
               <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">

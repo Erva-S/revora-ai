@@ -1,7 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 
+const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : (typeof process !== 'undefined' ? process.env : {});
+
 const rawSupabaseUrl =
-  import.meta.env.VITE_SUPABASE_URL ||
+  env.VITE_SUPABASE_URL ||
   'https://zddythsszyznsguiuiss.supabase.co';
 
 const supabaseUrl = rawSupabaseUrl
@@ -9,8 +11,8 @@ const supabaseUrl = rawSupabaseUrl
   : '';
 
 const supabaseKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  env.VITE_SUPABASE_ANON_KEY ||
+  env.VITE_SUPABASE_PUBLISHABLE_KEY ||
   'sb_publishable_yHALwh67VW1COYUdpTIj2A_cFzxGYWT';
 
 if (!supabaseUrl || !supabaseKey) {

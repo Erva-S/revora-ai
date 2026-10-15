@@ -65,12 +65,13 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
               <div className="h-5 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
               <a
                 href="#home"
-                className="font-fustat font-extrabold text-[20px] sm:text-[22px] tracking-tight text-black flex items-center gap-2 group select-none"
+                className="flex items-center gap-2 group select-none"
               >
-                <div className="w-7 h-7 rounded-lg bg-[#0084FF]/10 flex items-center justify-center group-hover:scale-105 transition-transform duration-200">
-                  <Bot className="w-5 h-5 text-[#0084FF]" />
-                </div>
-                <span>Revora<span className="text-[#0084FF]">.</span></span>
+                <img
+                  src="/revora-logo.png"
+                  alt="Revora"
+                  className="h-8 sm:h-9 w-auto object-contain transition-transform duration-200 group-hover:scale-[1.02]"
+                />
               </a>
             </div>
 
@@ -181,10 +182,12 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
                         className="h-6 w-auto object-contain"
                       />
                     </div>
-                    <div className="h-4 w-[1px] bg-black/15" />
-                    <div className="font-fustat font-extrabold text-[17px] tracking-tight text-black flex items-center gap-1.5">
-                      <Bot className="w-4 h-4 text-[#0084FF]" />
-                      <span>Revora.</span>
+                    <div className="flex items-center gap-1.5">
+                      <img
+                        src="/revora-logo.png"
+                        alt="Revora"
+                        className="h-7 w-auto object-contain"
+                      />
                     </div>
                   </div>
                   <button onClick={() => setMobileMenuOpen(false)} className="p-1 rounded-lg text-black/60">

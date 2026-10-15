@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Calendar, Check, Edit3, Loader2, PlusCircle, RefreshCw, Save, Sparkles, X } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import ContextBriefingSection from './ContextBriefingSection';
@@ -42,11 +42,13 @@ export default function PlannedMeetingsPanel({ projects = [], assignableUsers = 
   const [migrationUnavailable, setMigrationUnavailable] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const dispatchKeyRef = useRef(null);
 
   const selected = plannedMeetings.find((meeting) => meeting.id === selectedId) || null;
 
   useEffect(() => {
     if (selected) setMeetingUrl(selected.meeting_url || '');
+    dispatchKeyRef.current = null;
   }, [selectedId]);
 
   useEffect(() => {
@@ -196,7 +198,11 @@ export default function PlannedMeetingsPanel({ projects = [], assignableUsers = 
     setNotice('');
     try {
       const { data, error: invokeError } = await supabase.functions.invoke('deploy-bot', {
-        body: { planned_meeting_id: selected.id, meeting_url: meetingUrl.trim() },
+        body: {
+          planned_meeting_id: selected.id,
+          meeting_url: meetingUrl.trim(),
+          dispatch_key: dispatchKeyRef.current || (dispatchKeyRef.current = crypto.randomUUID()),
+        },
       });
       if (invokeError) {
         let message = invokeError.message;
@@ -209,6 +215,7 @@ export default function PlannedMeetingsPanel({ projects = [], assignableUsers = 
         : 'Bot deployed to the planned meeting.');
       setLinkMeetingId(data.planned_link === 'failed' ? (data.meeting_id || '') : '');
       setMeetingUrl('');
+      dispatchKeyRef.current = null;
       await loadPlannedMeetings();
     } catch (deployError) {
       setError(deployError.message || 'Bot deployment failed.');

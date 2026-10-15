@@ -62,8 +62,8 @@ export default function GetStartedModal({ isOpen, onClose }) {
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 bg-white/60">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-xl bg-[#0084FF] flex items-center justify-center text-white shadow-xs">
-                <Bot className="w-5 h-5" />
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0">
+                <img src="/revora-icon.png" alt="Revora" className="w-9 h-9 object-contain" />
               </div>
               <h3 className="font-outfit font-bold text-[18px] text-black">
                 Get Started with Revora

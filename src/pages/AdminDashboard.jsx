@@ -10,7 +10,7 @@ import AdminClientManager from '../components/AdminClientManager';
 import { 
   ShieldCheck, LogOut, Users, RefreshCw, Lock, Check, 
   Trash2, Calendar, Send, ShieldAlert, ArrowLeft, PlusCircle, X, 
-  AlignLeft, Bot, Activity, Shield, Database, Building2
+  AlignLeft, Activity, Shield, Database, Building2
 } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -232,9 +232,8 @@ export default function AdminDashboard({ onNavigateHome }) {
             <div className="p-1 rounded-lg bg-white border border-slate-200 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
               <img src="/college-logo.png" alt="CHARUSAT Logo" className="h-6 w-auto object-contain" />
             </div>
-            <div className="h-4 w-[1px] bg-slate-200 shrink-0 hidden sm:block" />
-            <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white shrink-0 shadow-xs">
-              <Bot className="w-4 h-4" />
+            <div className="h-7 w-7 rounded-lg flex items-center justify-center shrink-0">
+              <img src="/revora-icon.png" alt="Revora" className="h-7 w-7 object-contain shrink-0" />
             </div>
             <span>Admin Control Center</span>
           </div>

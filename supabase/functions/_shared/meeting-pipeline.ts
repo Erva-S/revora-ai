@@ -1185,7 +1185,7 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
 
   const { data: existing, error: lookupError } = await supabaseAdmin
     .from('meetings')
-    .select('id, status, summary, transcript, transcription_provider, processing_stage, ended_at, raw_payload, updated_at, recording_status, recording_metadata')
+    .select('id, status, summary, transcript, transcription_provider, processing_stage, ended_at, raw_payload, updated_at, recording_status, recording_metadata, provider_status, provider_status_at, bot_joining_started_at, bot_joined_at, last_human_left_at, bot_leave_requested_at, bot_departure_confirmed_at')
     .eq('bot_id', botId)
     .maybeSingle();
   // A very fast bot can callback before deploy-bot inserts its owned row. Retry
@@ -1278,7 +1278,13 @@ export async function handleMeetingBaasWebhook(req: Request): Promise<Response> 
       // CAS prevents a delayed status request from overwriting a concurrent
       // completion. A retry will see the newer row and apply the ordering guard.
       const videoState = recordingPatch({ ...data, bot_id: botId });
-      let query = supabaseAdmin.from('meetings').update({ ...mapped,
+      const lifecyclePatch = { ...mapped };
+      // Keep the first observed lifecycle timestamp. A duplicate webhook must
+      // never make a meeting appear to have joined or left later than it did.
+      for (const field of ['bot_joining_started_at', 'bot_joined_at', 'last_human_left_at', 'bot_departure_confirmed_at'] as const) {
+        if (existing[field]) delete lifecyclePatch[field];
+      }
+      let query = supabaseAdmin.from('meetings').update({ ...lifecyclePatch,
         ...(!['ready', 'expired'].includes(existing.recording_status) ? { recording_status: videoState.recording_status } : {}), raw_payload: meetingEventMetadata(body) })
         .eq('bot_id', botId).in('status', ['pending', 'recording']);
       if (existing.updated_at) query = query.eq('updated_at', existing.updated_at);
@@ -1373,6 +1379,7 @@ async function runCompletion(supabaseAdmin: any, body: Record<string, any>, data
   await updateMeetingByBotId(supabaseAdmin, botId, {
     status: 'recording',
     processing_stage: 'transcript_processing',
+    bot_departure_confirmed_at: endedAt,
     raw_payload: meetingEventMetadata(data.raw_meetingbaas_payload ?? body),
   });
 
@@ -1407,6 +1414,7 @@ async function runCompletion(supabaseAdmin: any, body: Record<string, any>, data
       processing_stage: 'completed',
       duration_secs: durationSecs,
       ended_at: endedAt,
+      bot_departure_confirmed_at: endedAt,
       ...(joinedAt ? { started_at: joinedAt } : {}),
       error_message: 'Meeting ended, but no transcript content was produced (no speech detected or transcription unavailable).',
       raw_payload: meetingEventMetadata(data.raw_meetingbaas_payload ?? body),
@@ -1448,6 +1456,7 @@ async function runCompletion(supabaseAdmin: any, body: Record<string, any>, data
     summary: analysis.executive_summary,
     action_items: analysis.action_items,
     error_message: null,
+    meeting_completed_at: endedAt,
   });
 
   const finalId = meeting?.id ?? meetingId;

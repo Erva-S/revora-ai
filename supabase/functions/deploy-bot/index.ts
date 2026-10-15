@@ -60,6 +60,66 @@ type OwnerResolution =
   | { ownerId: string }
   | { ownerId: null; error: string };
 
+type DispatchReservation = {
+  id: string;
+  request_key: string;
+  state: 'creating' | 'created' | 'unknown' | 'failed';
+  bot_id?: string | null;
+  meeting_id?: string | null;
+  planned_link?: 'linked' | 'failed' | null;
+  error_message?: string | null;
+  created_now?: boolean;
+};
+
+function validDispatchKey(value: unknown): string | null {
+  const key = String(value ?? '').trim();
+  return key && key.length <= 200 ? key : null;
+}
+
+async function reserveDispatch(
+  supabaseAdmin: any,
+  values: Record<string, unknown>,
+): Promise<DispatchReservation> {
+  const inserted = await supabaseAdmin.from('meeting_bot_dispatches')
+    .insert(values)
+    .select('id,request_key,state,bot_id,meeting_id,planned_link,error_message')
+    .single();
+  if (inserted.data) return { ...(inserted.data as DispatchReservation), created_now: true };
+
+  // request_key and planned_meeting_id are both unique. Reading after a
+  // conflict makes concurrent/retried browser requests adopt the same
+  // reservation rather than POSTing another provider bot.
+  if (inserted.error?.code === '23505') {
+    const byRequest = await supabaseAdmin.from('meeting_bot_dispatches')
+      .select('id,request_key,state,bot_id,meeting_id,planned_link,error_message')
+      .eq('request_key', values.request_key)
+      .maybeSingle();
+    if (byRequest.data) return { ...(byRequest.data as DispatchReservation), created_now: false };
+    if (values.planned_meeting_id) {
+      const byPlan = await supabaseAdmin.from('meeting_bot_dispatches')
+        .select('id,request_key,state,bot_id,meeting_id,planned_link,error_message')
+        .eq('planned_meeting_id', values.planned_meeting_id)
+        .maybeSingle();
+      if (byPlan.data) return { ...(byPlan.data as DispatchReservation), created_now: false };
+    }
+  }
+
+  throw new ContextError(
+    inserted.error?.code && ['42P01', 'PGRST202', 'PGRST204', 'PGRST205'].includes(inserted.error.code)
+      ? 'Meeting lifecycle migration is not installed. Apply the latest Supabase migration before deploying a bot.'
+      : 'Could not reserve this bot dispatch safely; no provider bot was created.',
+    503,
+  );
+}
+
+async function updateDispatch(supabaseAdmin: any, id: string, patch: Record<string, unknown>) {
+  const result = await supabaseAdmin.from('meeting_bot_dispatches').update(patch).eq('id', id);
+  if (result.error) pipelineLog('dispatch_reservation_update_failed', null, String(patch.bot_id || ''), {
+    http_status: 503, database_code: result.error.code,
+  });
+  return result;
+}
+
 // Bot deployment is admin-only. The caller's role is read from public.profiles
 // with the service role (the single trusted source) — never from the request
 // body, user_metadata, or anything else the client can set. Anything we cannot
@@ -208,7 +268,7 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co';
-  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
   // Authorization is only ever decided with the real service role key: the anon
   // fallback below cannot read another user's profiles row, so using it here
   // would turn "cannot verify" into "allow".
@@ -234,7 +294,17 @@ serve(async (req: Request): Promise<Response> => {
       const botId = urlParams.get('bot_id');
 
       if (!botId || !UUID_PATTERN.test(botId)) return json({ success: false, error: 'A valid bot_id UUID is required.' }, 400);
+      const leaveRequestedAt = new Date().toISOString();
+      const leaveStarted = Date.now();
       const result = await meetingBaasRequest(`/bots/${botId}/leave`, 'POST');
+      const leavePatch: Record<string, string> = { bot_leave_requested_at: leaveRequestedAt };
+      if (result?.already_left) leavePatch.bot_departure_confirmed_at = leaveRequestedAt;
+      const savedLeave = await createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY)
+        .from('meetings').update(leavePatch).eq('bot_id', botId).select('id').maybeSingle();
+      if (savedLeave.error) pipelineLog('bot_leave_timestamp_save_failed', null, botId, { http_status: 503, database_code: savedLeave.error.code });
+      pipelineLog('bot_leave_requested', savedLeave.data?.id || null, botId, {
+        duration_ms: Date.now() - leaveStarted, http_status: 200, leave_trigger_reason: 'admin_eject', already_left: !!result?.already_left,
+      });
       // Acceptance is not proof of departure. Only provider lifecycle/completion
       // events set ended_at, and the normal callback still finalizes artifacts.
       return json({ success: true, already_left: !!result?.already_left, message: 'Bot leave request accepted.' }, 200);
@@ -256,6 +326,11 @@ serve(async (req: Request): Promise<Response> => {
       payload = await req.json();
     } catch {
       return json({ success: false, error: 'Request body must be valid JSON' }, 400);
+    }
+
+    const dispatchKey = validDispatchKey(payload.dispatch_key ?? payload.dispatchKey);
+    if (!dispatchKey && payload.retry_link !== true) {
+      return json({ success: false, error: 'dispatch_key is required and must be at most 200 characters.' }, 400);
     }
 
     const requestedPlannedMeetingId = payload.planned_meeting_id ?? payload.plannedMeetingId;
@@ -334,25 +409,57 @@ serve(async (req: Request): Promise<Response> => {
     const requestedTitle = payload.title ? String(payload.title).slice(0, 200) : '';
     const title = String(plannedMeeting?.title || requestedTitle || 'Revora').slice(0, 200) || 'Revora';
 
-    const owner = await resolveMeetingOwner(
+    if (projectId && !UUID_PATTERN.test(projectId)) return json({ success: false, error: 'project_id must be a valid UUID' }, 400);
+
+    // Owner and project validation are independent after planned-row checks.
+    // Do not let an optional context lookup serialize the provider dispatch.
+    const ownerPromise = resolveMeetingOwner(
       SUPABASE_URL,
       AUTHZ_SERVICE_ROLE_KEY,
       auth.userId,
-      plannedOwnerId ?? requestedOwnerId
+      plannedOwnerId ?? requestedOwnerId,
     );
-    if (!owner.ownerId) {
-      return json({ success: false, error: 'error' in owner ? owner.error : 'Invalid meeting owner' }, 400);
+    const projectPromise = projectId
+      ? createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY).from('projects').select('id').eq('id', projectId).maybeSingle()
+      : Promise.resolve({ data: { id: null }, error: null });
+    const [owner, projectResult] = await Promise.all([ownerPromise, projectPromise]);
+    if (!owner.ownerId) return json({ success: false, error: 'error' in owner ? owner.error : 'Invalid meeting owner' }, 400);
+    if (projectId && (projectResult.error || !projectResult.data)) {
+      return json({ success: false, error: 'Project unavailable. Apply the context migration and choose an existing project.' }, 400);
     }
     const userId: string = owner.ownerId;
 
-    // Optional context assignment is verified before dispatching an external bot.
-    if (projectId) {
-      if (!UUID_PATTERN.test(projectId)) return json({ success: false, error: 'project_id must be a valid UUID' }, 400);
-      const projectClient = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
-      const { data: project, error: projectError } = await projectClient.from('projects').select('id').eq('id', projectId).maybeSingle();
-      if (projectError || !project) return json({ success: false, error: 'Project unavailable. Apply the context migration and choose an existing project.' }, 400);
-      const { error: columnError } = await projectClient.from('meetings').select('project_id').limit(1);
-      if (columnError) return json({ success: false, error: 'Meeting project assignment is not installed yet.' }, 400);
+    const dispatchRequestedAt = new Date().toISOString();
+    const dispatchStarted = Date.now();
+    const supabaseAdmin = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+    const dispatch = await reserveDispatch(supabaseAdmin, {
+      request_key: dispatchKey,
+      planned_meeting_id: plannedMeetingId,
+      requested_by: auth.userId,
+      owner_id: userId,
+      project_id: projectId || null,
+      meeting_url: meetingUrl,
+      title,
+      platform: detectPlatform(meetingUrl),
+      state: 'creating',
+    });
+
+    if (dispatch.state === 'created' && dispatch.bot_id && dispatch.meeting_id) {
+      pipelineLog('bot_dispatch_duplicate', dispatch.meeting_id, dispatch.bot_id, { duration_ms: Date.now() - dispatchStarted, http_status: 200 });
+      return json({ success: true, duplicate: true, bot_id: dispatch.bot_id, meeting_id: dispatch.meeting_id,
+        assigned_to: userId, status: 'pending', ...(dispatch.planned_link ? { planned_link: dispatch.planned_link } : {}) }, 200);
+    }
+    if (dispatch.state === 'creating' && dispatch.id && !dispatch.created_now) {
+      // A different request currently owns the provider call. Never issue a
+      // second POST while its result is ambiguous or still in flight.
+      return json({ success: true, accepted: true, duplicate: true, status: 'dispatching',
+        message: 'This meeting is already being dispatched. Wait for its lifecycle update.' }, 202);
+    }
+    if (dispatch.state === 'unknown' && !dispatch.bot_id) {
+      return json({ success: false, error: dispatch.error_message || 'The previous provider request had an unknown result. Reconcile it before retrying.' }, 409);
+    }
+    if (dispatch.state === 'failed') {
+      return json({ success: false, error: dispatch.error_message || 'This dispatch request already failed. Start a new deployment.' }, 409);
     }
 
     const webhookUrl = buildWebhookUrl();
@@ -385,47 +492,40 @@ serve(async (req: Request): Promise<Response> => {
         ...(elevenlabs ? { transcription_model: elevenlabs.model } : {}) } },
     };
 
-    let botId: string | null = null;
+    let botId: string | null = dispatch.bot_id || null;
     let dispatchError: string | null = null;
 
     try {
-      const result = await meetingBaasRequest('/bots', 'POST', baasPayload, 1);
-      const candidate = String(result?.bot_id || '').trim();
-      if (!UUID_PATTERN.test(candidate)) throw new ContextError('MeetingBaaS returned no valid bot_id. Check the provider dashboard before retrying.', 502);
-      botId = candidate;
+      if (!botId) {
+        const providerStarted = Date.now();
+        const result = await meetingBaasRequest('/bots', 'POST', baasPayload, 1);
+        const candidate = String(result?.bot_id || '').trim();
+        if (!UUID_PATTERN.test(candidate)) throw new ContextError('MeetingBaaS returned no valid bot_id. Check the provider dashboard before retrying.', 502);
+        botId = candidate;
+        await updateDispatch(supabaseAdmin, dispatch.id, { bot_id: botId, error_message: null });
+        pipelineLog('bot_creation_accepted', null, botId, {
+          duration_ms: Date.now() - providerStarted, total_dispatch_ms: Date.now() - dispatchStarted,
+          http_status: 201,
+        });
+      }
     } catch (error) {
       dispatchError = error instanceof ContextError ? error.message : 'MeetingBaaS bot creation failed.';
-      console.error(`[Deploy-Bot] ${dispatchError}`);
+      await updateDispatch(supabaseAdmin, dispatch.id, { state: 'unknown', error_message: dispatchError });
+      pipelineLog('bot_creation_unknown', null, botId, {
+        duration_ms: Date.now() - dispatchStarted, http_status: 502, terminal_failure_reason: dispatchError,
+      });
     }
 
     if (!botId) {
-      if (SUPABASE_URL && SERVICE_ROLE_KEY) {
-        try {
-          const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-          const failedInsert = await supabaseAdmin.from('meetings').insert({
-            user_id: userId,
-            ...(projectId ? { project_id: projectId } : {}),
-            meeting_url: meetingUrl,
-            platform: detectPlatform(meetingUrl),
-            title: title,
-            status: 'failed',
-            error_message: dispatchError || 'Failed to dispatch MeetingBaaS bot',
-            started_at: new Date().toISOString(),
-          });
-          if (failedInsert.error) pipelineLog('failed_bot_state_save_failed', null, null, { http_status: 503 });
-        } catch {
-          pipelineLog('failed_bot_state_save_failed', null, null, { http_status: 503 });
-        }
-      }
-
       return json(
         {
           success: false,
           error: dispatchError || 'Failed to dispatch MeetingBaaS bot',
           meeting_url: meetingUrl,
           webhook_url: webhookUrl,
+          dispatch_key: dispatchKey,
         },
-        502
+        503
       );
     }
 
@@ -433,7 +533,6 @@ serve(async (req: Request): Promise<Response> => {
     let meetingId: string | null = null;
     if (SUPABASE_URL && SERVICE_ROLE_KEY) {
       try {
-        const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
         const { data: dbData, error: dbError } = await supabaseAdmin
           .from('meetings')
           .upsert({
@@ -444,12 +543,18 @@ serve(async (req: Request): Promise<Response> => {
             platform: detectPlatform(meetingUrl),
             title: title,
             transcription_provider: stt.provider,
+            status: 'pending',
+            processing_stage: 'bot_dispatched',
+            bot_creation_requested_at: dispatchRequestedAt,
           }, { onConflict: 'bot_id' })
           .select('id, bot_id, status')
           .single();
 
         if (dbError) {
-          pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503 });
+          await updateDispatch(supabaseAdmin, dispatch.id, {
+            state: 'unknown', bot_id: botId, error_message: 'Provider bot was created but meeting ownership could not be saved.',
+          });
+          pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503, duration_ms: Date.now() - dispatchStarted });
         } else if (dbData) {
           meetingId = dbData.id;
           try {
@@ -458,22 +563,25 @@ serve(async (req: Request): Promise<Response> => {
               p_organizer_id: userId,
               p_attendee_emails: [],
             });
-          } catch (attErr) {
-            console.warn('Record organizer attendee notice:', attErr);
+          } catch (attendeeErr) {
+            console.warn('[deploy-bot] Non-blocking attendee recording warning:', attendeeErr);
           }
         }
       } catch {
-        pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503 });
+        await updateDispatch(supabaseAdmin, dispatch.id, {
+          state: 'unknown', bot_id: botId, error_message: 'Provider bot was created but meeting ownership could not be saved.',
+        });
+        pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503, duration_ms: Date.now() - dispatchStarted });
       }
     }
 
     if (!meetingId) return json({ success: false, bot_id: botId, dispatched: true,
-      error: 'The bot was dispatched, but meeting ownership could not be saved. Do not deploy a second bot; retry saving this bot in the database.' }, 503);
+      dispatch_key: dispatchKey,
+      error: 'The bot was dispatched, but meeting ownership could not be saved. Retry with the same dispatch_key to adopt it; do not create a second bot.' }, 503);
 
     let plannedLink: 'linked' | 'failed' | undefined;
     if (plannedMeetingId) {
       try {
-        const supabaseAdmin = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
         const { data: linked, error: linkError } = await supabaseAdmin.rpc('link_planned_meeting', {
           p_planned_id: plannedMeetingId,
           p_meeting_id: meetingId,
@@ -492,6 +600,13 @@ serve(async (req: Request): Promise<Response> => {
       }
     }
 
+    await updateDispatch(supabaseAdmin, dispatch.id, {
+      state: 'created', bot_id: botId, meeting_id: meetingId, planned_link: plannedLink || null, error_message: null,
+    });
+    pipelineLog('bot_dispatch_persisted', meetingId, botId, {
+      duration_ms: Date.now() - dispatchStarted, http_status: 200, planned_link: plannedLink || null,
+    });
+
     return json(
       {
         success: true,
@@ -504,6 +619,7 @@ serve(async (req: Request): Promise<Response> => {
         is_simulated: false,
         meeting_url: meetingUrl,
         webhook_url: webhookUrl,
+        dispatch_key: dispatchKey,
         ...(plannedLink ? { planned_link: plannedLink } : {}),
       },
       200

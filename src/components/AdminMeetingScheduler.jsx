@@ -143,7 +143,7 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
             {activeMode === 'schedule' ? (
               <PlusCircle className="w-5 h-5" />
             ) : (
-              <Bot className="w-5 h-5" />
+              <img src="/revora-icon.png" alt="Revora Bot" className="w-6 h-6 object-contain" />
             )}
           </div>
           <div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
@@ -11,8 +11,9 @@ import MeetingCalendar from '../components/MeetingCalendar';
 import ActionItemCard, { readActionItem } from '../components/ActionItemCard';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
+import { applyMeetingChange, mergeMeetingRows, subscribeToMeetingChanges } from '../lib/meetingRealtime';
 import { 
-  Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
+  LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
   Layers, Search, AlertCircle, Key,
   LayoutDashboard, Settings, User as UserIcon, LogIn, Building2
@@ -52,6 +53,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
   // Archive Modal State
   const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
   const [archiveSearch, setArchiveSearch] = useState('');
+  const meetingRequestVersion = useRef(0);
+  const meetingRefreshTimer = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,23 +103,25 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
   };
 
   // Fetch real meetings from Supabase Postgres database
-  const fetchMeetings = async () => {
+  const fetchMeetings = async ({ silent = false } = {}) => {
+    const requestId = ++meetingRequestVersion.current;
     try {
-      setLoadingMeetings(true);
+      if (!silent) setLoadingMeetings(true);
       const { data, error } = await supabase
         .from('meetings')
         .select('*')
         .order('created_at', { ascending: false });
 
       if (!error && data) {
-        setMeetingsList(data);
+        if (requestId < meetingRequestVersion.current) return;
+        setMeetingsList((current) => mergeMeetingRows(current, data));
         // If route has meeting id, find and select it
         if (routeMeetingId) {
           const match = data.find(
             (m) => String(m.id) === String(routeMeetingId) || m.bot_id === routeMeetingId
           );
           if (match) {
-            setSelectedMeeting(match);
+            setSelectedMeeting((current) => mergeMeetingRows(current ? [current] : [], [match])[0] || match);
             setMeetingAccessDenied(false);
           } else {
             setSelectedMeeting(null);
@@ -132,7 +137,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     } catch (err) {
       console.warn('Meetings query notice:', err);
     } finally {
-      setLoadingMeetings(false);
+      if (!silent) setLoadingMeetings(false);
     }
   };
 
@@ -165,25 +170,42 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     fetchBriefings();
     fetchPlannedMeetings();
 
-    let channel = null;
-    try {
-      channel = supabase
-        .channel('meetings_realtime_feed')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => {
-          fetchMeetings();
-          fetchBriefings();
-        })
-        .subscribe();
-    } catch (realtimeErr) {
-      console.warn('Realtime subscription notice:', realtimeErr);
-    }
+    const scheduleRefresh = () => {
+      if (meetingRefreshTimer.current) clearTimeout(meetingRefreshTimer.current);
+      meetingRefreshTimer.current = setTimeout(() => { fetchMeetings({ silent: true }); }, 250);
+    };
+    const unsubscribe = subscribeToMeetingChanges('meetings_realtime_feed', {
+      onChange: (payload) => {
+        setMeetingsList((current) => applyMeetingChange(current, payload));
+        if (payload?.new?.id) {
+          setSelectedMeeting((current) => {
+            if (!current || current.id !== payload.new.id) return current;
+            return mergeMeetingRows([current], [payload.new])[0] || current;
+          });
+        }
+        scheduleRefresh();
+      },
+      onStatus: (status, realtimeErr) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Realtime subscription notice:', realtimeErr?.message || status);
+          fetchMeetings({ silent: true });
+        }
+      },
+    });
+
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') fetchMeetings({ silent: true });
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    const pollId = setInterval(() => fetchMeetings({ silent: true }), 5000);
 
     return () => {
-      if (channel) {
-        try {
-          supabase.removeChannel(channel);
-        } catch (_) {}
-      }
+      unsubscribe();
+      clearInterval(pollId);
+      if (meetingRefreshTimer.current) clearTimeout(meetingRefreshTimer.current);
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
     };
   }, [routeMeetingId]);
 
@@ -289,9 +311,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
               <img src="/college-logo.png" alt="CHARUSAT Logo" className="h-6 w-auto object-contain" />
             </div>
-            <div className="h-4 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
-            <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white shrink-0">
-              <Bot className="w-4 h-4" />
+            <div className="h-7 w-7 rounded-lg flex items-center justify-center shrink-0">
+              <img src="/revora-icon.png" alt="Revora" className="h-7 w-7 object-contain shrink-0" />
             </div>
             <span>Revora Dashboard</span>
             {user?.clientName ? (

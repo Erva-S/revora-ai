@@ -74,8 +74,8 @@ export default function LoginModal({ isOpen, onClose, onSuccessRedirect }) {
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 bg-white/60">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#0084FF] to-[#0066CC] flex items-center justify-center text-white shadow-xs">
-                <Bot className="w-4 h-4 text-white" />
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0">
+                <img src="/revora-icon.png" alt="Revora" className="w-9 h-9 object-contain" />
               </div>
               <div>
                 <h3 className="font-outfit font-bold text-[18px] text-black leading-tight">

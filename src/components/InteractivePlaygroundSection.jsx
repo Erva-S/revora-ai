@@ -80,7 +80,7 @@ export default function InteractivePlaygroundSection({ onOpenTryModal }) {
           <div className="lg:col-span-5 p-6 sm:p-8 bg-neutral-50/80 border-b lg:border-b-0 lg:border-r border-black/10 flex flex-col justify-between">
             <div>
               <h3 className="font-outfit font-bold text-[18px] text-black mb-4 flex items-center gap-2">
-                <Bot className="w-5 h-5 text-[#0084FF]" />
+                <img src="/revora-icon.png" alt="Revora" className="w-5 h-5 object-contain" />
                 Select Task Template
               </h3>
 

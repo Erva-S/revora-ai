@@ -48,7 +48,7 @@ export function AuthProvider({ children }) {
       console.warn('Profiles table query fallback:', err);
     }
 
-    const fallbackRole = ['admin@revora.ai', 'evv18407@gmail.com', 'rudrikakadiya26@gmail.com'].includes(authUser.email?.toLowerCase()) ? 'admin' : 'user';
+    const fallbackRole = ['evv18407@gmail.com', 'rudrikakadiya26@gmail.com'].includes(authUser.email?.toLowerCase()) ? 'admin' : 'user';
     return {
       id: authUser.id,
       email: authUser.email,
@@ -75,7 +75,13 @@ export function AuthProvider({ children }) {
             const savedDemo = localStorage.getItem('revora_demo_user');
             if (savedDemo) {
               try {
-                persistUser(JSON.parse(savedDemo));
+                const parsed = JSON.parse(savedDemo);
+                if (parsed?.role === 'admin' || parsed?.id === 'demo_admin_001') {
+                  localStorage.removeItem('revora_demo_user');
+                  persistUser(null);
+                } else {
+                  persistUser(parsed);
+                }
               } catch (_) {
                 persistUser(null);
               }
@@ -128,24 +134,6 @@ export function AuthProvider({ children }) {
     return { success: true, user: demoUserObj };
   };
 
-  // Quick Demo Admin Login
-  const loginDemoAdmin = async () => {
-    setError(null);
-    const demoAdminObj = {
-      id: 'demo_admin_001',
-      email: 'admin@revora.ai',
-      name: 'System Admin',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=80&h=80&fit=crop&crop=face',
-      role: 'admin',
-      createdAt: new Date().toISOString(),
-    };
-    try {
-      localStorage.setItem('revora_demo_user', JSON.stringify(demoAdminObj));
-    } catch (_) {}
-    persistUser(demoAdminObj);
-    return { success: true, user: demoAdminObj };
-  };
-
   // Google OAuth Sign In
   const loginGoogle = async () => {
     setError(null);
@@ -176,38 +164,12 @@ export function AuthProvider({ children }) {
   const loginAdmin = async (email, password) => {
     setError(null);
     const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanPassword = password || 'admin123';
+    const cleanPassword = password || '';
 
-    // Local admin login check fallback
-    if (cleanEmail === 'admin@revora.ai' && (password === 'admin123' || password === 'admin')) {
-      return await loginDemoAdmin();
-    }
-
-    const finishAdminLogin = async (authUser) => {
-      const userProfile = await fetchUserProfile(authUser);
-      if (userProfile?.role !== 'admin' && cleanEmail !== 'admin@revora.ai') {
-        await supabase.auth.signOut();
-        const msg = 'Access denied: this account does not have the admin role.';
-        setError(msg);
-        return { success: false, message: msg };
-      }
-      persistUser(userProfile);
-      return { success: true, user: userProfile };
-    };
-
-    if (cleanEmail === 'admin@revora.ai' || cleanEmail.startsWith('admin@')) {
-      try {
-        const { data, error: signInError } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password: cleanPassword,
-        });
-
-        if (!signInError && data?.user) {
-          return await finishAdminLogin(data.user);
-        }
-      } catch (_) {}
-
-      return await loginDemoAdmin();
+    if (!cleanEmail || !cleanPassword) {
+      const msg = 'Please enter both an admin email and password.';
+      setError(msg);
+      return { success: false, message: msg };
     }
 
     try {
@@ -216,22 +178,21 @@ export function AuthProvider({ children }) {
         password: cleanPassword,
       });
 
-      if (!signInError && data?.user) {
-        return await finishAdminLogin(data.user);
+      if (signInError) throw signInError;
+      if (!data?.user) throw new Error('No user returned from authentication.');
+
+      const userProfile = await fetchUserProfile(data.user);
+      if (userProfile?.role !== 'admin') {
+        await supabase.auth.signOut();
+        const msg = 'Access denied: this account does not have the admin role.';
+        setError(msg);
+        return { success: false, message: msg };
       }
 
-      if (cleanEmail.includes('admin')) {
-        return await loginDemoAdmin();
-      }
-
-      const msg = signInError?.message || 'Admin authentication failed.';
-      setError(msg);
-      return { success: false, message: msg };
+      persistUser(userProfile);
+      return { success: true, user: userProfile };
     } catch (err) {
-      if (cleanEmail.includes('admin')) {
-        return await loginDemoAdmin();
-      }
-      const msg = err.message || 'Authentication error';
+      const msg = err.message || 'Admin authentication failed.';
       setError(msg);
       return { success: false, message: msg };
     }
@@ -261,7 +222,6 @@ export function AuthProvider({ children }) {
         setError,
         loginGoogle,
         loginAdmin,
-        loginDemoAdmin,
         loginDemoUser,
         logout,
         fetchUserProfile,

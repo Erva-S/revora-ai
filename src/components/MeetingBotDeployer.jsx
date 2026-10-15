@@ -1,14 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { Bot, Video, Loader2, CheckCircle2, AlertCircle, Sparkles, RefreshCw, ExternalLink, ChevronDown, ChevronRight, Circle } from 'lucide-react';
+import { Bot, Video, Loader2, CheckCircle2, AlertCircle, Sparkles, RefreshCw, ExternalLink, ChevronDown, ChevronRight, Circle, Plus, FolderPlus, X, Check } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 
-export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
+export default function MeetingBotDeployer({ onBotDeployed, assignableUsers, onProjectCreated }) {
   const [meetingUrl, setMeetingUrl] = useState('');
   const [meetingTitle, setMeetingTitle] = useState('');
   const [assignToUserId, setAssignToUserId] = useState('');
   const [projectId, setProjectId] = useState('');
   const [projects, setProjects] = useState([]);
+  const [clients, setClients] = useState([]);
   const [projectsAvailable, setProjectsAvailable] = useState(false);
+  const [showNewProject, setShowNewProject] = useState(false);
+  const [selectedClientId, setSelectedClientId] = useState('');
+  const [newClientName, setNewClientName] = useState('');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectError, setProjectError] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [botStatus, setBotStatus] = useState(null); // null | { botId, status, meetingUrl, deployedAt }
@@ -16,11 +23,97 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
 
   const loadProjects = async () => {
     try {
-      const { data, error: projectError } = await supabase.from('projects').select('id,name,clients(name)').order('name');
-      if (!projectError) { setProjects(data || []); setProjectsAvailable(true); }
+      const [projRes, clientRes] = await Promise.all([
+        supabase.from('projects').select('id,name,clients(name)').order('name'),
+        supabase.from('clients').select('id,name').order('name'),
+      ]);
+      if (!projRes.error) {
+        setProjects(projRes.data || []);
+        setProjectsAvailable(true);
+      }
+      if (!clientRes.error) {
+        setClients(clientRes.data || []);
+      }
     } catch { /* Optional context deployment may not be installed yet. */ }
   };
   useEffect(() => { const timer = setTimeout(loadProjects, 0); return () => clearTimeout(timer); }, []);
+
+  const handleCreateProject = async (e) => {
+    e.preventDefault();
+    const trimmedProject = newProjectName.trim();
+    if (!trimmedProject) {
+      setProjectError('Please enter a project name.');
+      return;
+    }
+    if (!selectedClientId && !newClientName.trim()) {
+      setProjectError('Please select an existing client or enter a new client name.');
+      return;
+    }
+
+    setCreatingProject(true);
+    setProjectError('');
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const currentUid = sessionData?.session?.user?.id;
+      const isValidUUID = (id) => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+      const createdBy = isValidUUID(currentUid) ? currentUid : null;
+
+      let chosenClientId = selectedClientId;
+      if (!chosenClientId) {
+        const trimmedClient = newClientName.trim();
+        const { data: existingClient } = await supabase
+          .from('clients')
+          .select('id')
+          .ilike('name', trimmedClient)
+          .maybeSingle();
+
+        if (existingClient?.id) {
+          chosenClientId = existingClient.id;
+        } else {
+          const { data: insertedClient, error: clientInsertErr } = await supabase
+            .from('clients')
+            .insert({ name: trimmedClient, created_by: createdBy })
+            .select('id')
+            .single();
+          if (clientInsertErr) throw clientInsertErr;
+          chosenClientId = insertedClient.id;
+        }
+      }
+
+      let targetProjectId;
+      const { data: existingProject } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('client_id', chosenClientId)
+        .ilike('name', trimmedProject)
+        .maybeSingle();
+
+      if (existingProject?.id) {
+        targetProjectId = existingProject.id;
+      } else {
+        const { data: insertedProject, error: projectInsertErr } = await supabase
+          .from('projects')
+          .insert({ client_id: chosenClientId, name: trimmedProject, created_by: createdBy })
+          .select('id')
+          .single();
+        if (projectInsertErr) throw projectInsertErr;
+        targetProjectId = insertedProject.id;
+      }
+
+      await loadProjects();
+      setProjectId(targetProjectId);
+      setNewProjectName('');
+      setNewClientName('');
+      setSelectedClientId('');
+      setShowNewProject(false);
+      if (onProjectCreated) onProjectCreated();
+    } catch (err) {
+      setProjectError(err.message || 'Failed to create project.');
+    } finally {
+      setCreatingProject(false);
+    }
+  };
 
   useEffect(() => {
     if (!botStatus?.botId) return undefined;
@@ -300,14 +393,144 @@ export default function MeetingBotDeployer({ onBotDeployed, assignableUsers }) {
             )}
           </div>
 
-          {projectsAvailable && <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
-            Project <span className="font-normal text-slate-400 normal-case">(optional)</span>
-            <select value={projectId} onChange={(e) => setProjectId(e.target.value)} onFocus={loadProjects} disabled={loading}
-              className="mt-1.5 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-900 outline-none font-normal normal-case">
-              <option value="">No project</option>
-              {projects.map((p) => <option key={p.id} value={p.id}>{p.clients?.name} / {p.name}</option>)}
-            </select>
-          </label>}
+          {projectsAvailable && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label htmlFor="meeting-project-select" className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                  Project <span className="font-normal text-slate-400 normal-case">(optional)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewProject(!showNewProject);
+                    setProjectError('');
+                  }}
+                  className="text-[11px] font-bold text-[#0084FF] hover:text-[#0070D6] flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  {showNewProject ? (
+                    <>
+                      <X className="w-3.5 h-3.5" />
+                      <span>Cancel</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>New Project</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <select
+                id="meeting-project-select"
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                onFocus={loadProjects}
+                disabled={loading}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-900 outline-none font-normal"
+              >
+                <option value="">No project</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.clients?.name} / {p.name}
+                  </option>
+                ))}
+              </select>
+
+              {showNewProject && (
+                <div className="p-3.5 rounded-xl bg-slate-100/90 border border-slate-200/90 space-y-3 mt-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                    <FolderPlus className="w-4 h-4 text-[#0084FF]" />
+                    <span>Create New Client & Project</span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        Client
+                      </label>
+                      <select
+                        value={selectedClientId}
+                        onChange={(e) => setSelectedClientId(e.target.value)}
+                        disabled={creatingProject}
+                        className="w-full px-3 py-2 rounded-lg bg-white border border-slate-200 text-xs text-slate-900 outline-none"
+                      >
+                        <option value="">+ Create a new client...</option>
+                        {clients.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {!selectedClientId && (
+                      <div>
+                        <input
+                          type="text"
+                          value={newClientName}
+                          onChange={(e) => setNewClientName(e.target.value)}
+                          placeholder="Client or Company Name (e.g., Futurrizon)"
+                          maxLength={200}
+                          disabled={creatingProject}
+                          className="w-full px-3 py-2 rounded-lg bg-white border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 outline-none"
+                        />
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        Project Name
+                      </label>
+                      <input
+                        type="text"
+                        value={newProjectName}
+                        onChange={(e) => setNewProjectName(e.target.value)}
+                        placeholder="Project Name (e.g., AI Live Assistant)"
+                        maxLength={200}
+                        disabled={creatingProject}
+                        className="w-full px-3 py-2 rounded-lg bg-white border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {projectError && (
+                    <div className="text-[11px] text-red-600 font-medium">
+                      {projectError}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => { setShowNewProject(false); setProjectError(''); }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-200/70 transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateProject}
+                      disabled={creatingProject || !newProjectName.trim() || (!selectedClientId && !newClientName.trim())}
+                      className="px-3.5 py-1.5 rounded-lg bg-[#0084FF] hover:bg-[#0074E0] disabled:bg-slate-300 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                    >
+                      {creatingProject ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Creating...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Create & Select</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {error && (
             <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs font-medium flex items-center gap-2">

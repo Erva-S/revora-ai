@@ -305,7 +305,7 @@ export default function AdminDashboard({ onNavigateHome }) {
         )}
 
         {/* Bot Deployment */}
-        <MeetingBotDeployer onBotDeployed={handleBotDeployed} assignableUsers={usersList} />
+        <MeetingBotDeployer onBotDeployed={handleBotDeployed} assignableUsers={usersList} onProjectCreated={fetchProjects} />
 
         {/* Meeting Monitor */}
         <AdminMeetingsPanel refreshKey={meetingsRefreshKey} users={usersList} />

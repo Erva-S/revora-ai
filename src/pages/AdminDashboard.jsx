@@ -43,7 +43,13 @@ export default function AdminDashboard({ onNavigateHome }) {
     } catch (_) {}
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/briefings`);
+      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
+        headers: {
+          'x-user-email': user?.email || '',
+          'x-user-id': user?.id || '',
+          'x-user-role': 'admin',
+        },
+      });
       if (res.ok) {
         const data = await res.json();
         setAdminBriefingsList(Array.isArray(data) ? data : []);

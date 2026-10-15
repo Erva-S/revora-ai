@@ -34,8 +34,12 @@ serve(async (req: Request): Promise<Response> => {
         admin.from('profiles').select('role').eq('id', grant!.user_id).maybeSingle(),
       ]);
       requireDb(meeting.error, 'Recording permission lookup'); requireDb(profile.error, 'Recording role lookup');
+      const { data: hasAccess } = await admin.rpc('check_user_meeting_access', {
+        p_meeting_id: grant!.meeting_id,
+        p_user_id: grant!.user_id,
+      });
       if (!profile.data || !meeting.data || meeting.data.bot_id !== grant!.bot_id ||
-          (profile.data.role !== 'admin' && meeting.data.user_id !== grant!.user_id))
+          (!hasAccess && profile.data.role !== 'admin'))
         throw new RecordingError('DOWNLOAD_ACCESS_DENIED', 'Meeting not found or recording access denied.', 403);
       return meeting.data;
     };

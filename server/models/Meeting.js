@@ -23,6 +23,14 @@ const Meeting = sequelize.define('Meeting', {
     type: DataTypes.STRING,
     allowNull: true
   },
+  creatorEmail: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  creatorUserId: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
   agenda: {
     type: DataTypes.TEXT,
     allowNull: true

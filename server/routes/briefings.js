@@ -5,15 +5,40 @@ const router = express.Router();
 const nodemailer = require('nodemailer');
 const Meeting = require('../models/Meeting');
 
-// GET /api/briefings - Fetch all saved meetings/briefings
+// GET /api/briefings - Fetch meetings/briefings authorized for caller
 router.get('/', async (req, res) => {
   try {
+    const userEmail = (req.headers['x-user-email'] || req.query.email || '').trim().toLowerCase();
+    const userId = (req.headers['x-user-id'] || req.query.userId || '').trim();
+    const userRole = (req.headers['x-user-role'] || req.query.role || '').trim().toLowerCase();
+
+    // If caller provides no identity, fail closed
+    if (!userEmail && !userId) {
+      return res.json([]);
+    }
+
     const meetings = await Meeting.findAll({
       order: [['createdAt', 'DESC']],
     });
 
+    const isAdmin = userRole === 'admin' || userEmail === 'evv18407@gmail.com';
+
+    const visibleMeetings = isAdmin
+      ? meetings
+      : meetings.filter((m) => {
+          const creatorEmail = (m.creatorEmail || '').trim().toLowerCase();
+          if (creatorEmail && creatorEmail === userEmail) return true;
+          if (m.creatorUserId && m.creatorUserId === userId) return true;
+
+          const recipients = (m.recipientEmail || '')
+            .split(',')
+            .map((e) => e.trim().toLowerCase())
+            .filter(Boolean);
+          return recipients.includes(userEmail);
+        });
+
     // Ensure scheduledAt is present in both camelCase and snake_case
-    const formattedMeetings = meetings.map((m) => {
+    const formattedMeetings = visibleMeetings.map((m) => {
       const plain = m.toJSON();
       return {
         ...plain,
@@ -28,19 +53,60 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/briefings/:id - Fetch single meeting with strict authorization
+router.get('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = (req.headers['x-user-email'] || req.query.email || '').trim().toLowerCase();
+    const userId = (req.headers['x-user-id'] || req.query.userId || '').trim();
+    const userRole = (req.headers['x-user-role'] || req.query.role || '').trim().toLowerCase();
+
+    const meeting = await Meeting.findByPk(id);
+    if (!meeting) {
+      return res.status(404).json({ error: 'Meeting not found.' });
+    }
+
+    const isAdmin = userRole === 'admin' || userEmail === 'evv18407@gmail.com';
+    const creatorEmail = (meeting.creatorEmail || '').trim().toLowerCase();
+    const isCreator = (creatorEmail && creatorEmail === userEmail) || (meeting.creatorUserId && meeting.creatorUserId === userId);
+    const recipients = (meeting.recipientEmail || '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    const isAttendee = recipients.includes(userEmail);
+
+    if (!isAdmin && !isCreator && !isAttendee) {
+      return res.status(403).json({ error: 'Access denied: You are not authorized to view this meeting.' });
+    }
+
+    const plain = meeting.toJSON();
+    res.json({
+      ...plain,
+      scheduledAt: plain.scheduledAt || null,
+      scheduled_at: plain.scheduledAt || null,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // POST /api/briefings - Save meeting & send email to attendees
 router.post('/', async (req, res) => {
   try {
-    const { title, recipientEmail, agenda, scheduledAt } = req.body;
+    const { title, recipientEmail, agenda, scheduledAt, creatorEmail, creatorUserId } = req.body;
+    const authorEmail = creatorEmail || req.headers['x-user-email'] || null;
+    const authorUserId = creatorUserId || req.headers['x-user-id'] || null;
 
     const summaryText = `Pre-meeting briefing compiled for "${title}". Key focus: ${
       agenda || 'Align deliverables, review API integration, and discuss upcoming milestones.'
     }`;
 
-    // 1. Save Meeting with scheduledAt to Database
+    // 1. Save Meeting with scheduledAt, creatorEmail, and creatorUserId
     const meeting = await Meeting.create({
       title: title || 'New Scheduled Meeting',
       recipientEmail: recipientEmail || 'attendee@company.com',
+      creatorEmail: authorEmail,
+      creatorUserId: authorUserId,
       agenda: agenda || '',
       scheduledAt: scheduledAt || null,
       summaryContext: summaryText,

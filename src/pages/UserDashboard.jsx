@@ -35,6 +35,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
   const [briefingsList, setBriefingsList] = useState([]);
   const [loadingMeetings, setLoadingMeetings] = useState(true);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
+  const [meetingAccessDenied, setMeetingAccessDenied] = useState(false);
   const [linkedPlannedMeeting, setLinkedPlannedMeeting] = useState(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
@@ -74,10 +75,20 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     activeTab = 'profile';
   }
 
-  // Fetch AI Briefings from backend
+  // Fetch AI Briefings from backend authorized for user
   const fetchBriefings = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/briefings`);
+      if (!user?.email && !user?.id) {
+        setBriefingsList([]);
+        return;
+      }
+      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
+        headers: {
+          'x-user-email': user?.email || '',
+          'x-user-id': user?.id || '',
+          'x-user-role': user?.role || 'user',
+        },
+      });
       if (res.ok) {
         const data = await res.json();
         const list = Array.isArray(data) ? data : (data.briefings || []);
@@ -106,7 +117,16 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           );
           if (match) {
             setSelectedMeeting(match);
+            setMeetingAccessDenied(false);
+          } else {
+            setSelectedMeeting(null);
+            setMeetingAccessDenied(true);
           }
+        }
+      } else {
+        if (routeMeetingId) {
+          setSelectedMeeting(null);
+          setMeetingAccessDenied(true);
         }
       }
     } catch (err) {
@@ -183,12 +203,19 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
       const res = await fetch(`${API_BASE_URL}/api/briefings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': user?.email || '',
+          'x-user-id': user?.id || '',
+          'x-user-role': user?.role || 'user',
+        },
         body: JSON.stringify({
           title: meetingFormData.title,
           recipientEmail: meetingFormData.recipientEmail || user?.email,
           agenda: meetingFormData.agenda,
           scheduledAt: meetingFormData.scheduledAt,
+          creatorEmail: user?.email,
+          creatorUserId: user?.id,
         }),
       });
 
@@ -225,11 +252,13 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
   const handleOpenMeeting = (meeting) => {
     setSelectedMeeting(meeting);
+    setMeetingAccessDenied(false);
     navigate(`/meetings/${meeting.id}`);
   };
 
   const handleCloseMeetingModal = () => {
     setSelectedMeeting(null);
+    setMeetingAccessDenied(false);
     if (routeMeetingId) {
       navigate('/meetings');
     }
@@ -485,9 +514,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               ) : (
                 <div className="p-6 rounded-2xl bg-white border border-black/10 text-center space-y-2">
                   <Sparkles className="w-6 h-6 text-[#0084FF] mx-auto animate-pulse" />
-                  <h4 className="font-bold text-sm text-black">No Pre-Meeting Briefings Scheduled Yet</h4>
+                  <h4 className="font-bold text-sm text-black">No meetings yet</h4>
                   <p className="text-xs text-black/50 max-w-[420px] mx-auto">
-                    Meetings and pre-meeting AI briefings scheduled by administrators will appear here.
+                    Pre-meeting briefings for meetings you are scheduled to attend will appear here.
                   </p>
                 </div>
               )}
@@ -649,10 +678,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               ) : (
                 <div className="p-6 rounded-2xl bg-neutral-50 text-center space-y-2">
                   <Clock className="w-8 h-8 text-[#0084FF] mx-auto animate-pulse" />
-                  <h4 className="font-outfit font-bold text-base text-black">No Meetings Shared With You Yet</h4>
+                  <h4 className="font-outfit font-bold text-base text-black">No meetings yet</h4>
                   <p className="text-xs text-black/60 max-w-[480px] mx-auto leading-relaxed">
-                    Your administrator schedules meetings and sends the Revora bot into the call. As soon as a meeting
-                    you have access to finishes, its Gemini AI summary, transcript, and action items land right here.
+                    Meetings and transcripts you attend will automatically appear here once processed.
                   </p>
                 </div>
               )}
@@ -1013,6 +1041,30 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           </div>
         )}
 
+        {/* Modal: Access Denied / Inaccessible Meeting for Direct Route */}
+        {meetingAccessDenied && routeMeetingId && !loadingMeetings && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+            <div className="bg-white rounded-[28px] max-w-[460px] w-full p-6 text-center space-y-4 border border-black/10 shadow-2xl">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-outfit font-bold text-lg text-black">Meeting Inaccessible</h3>
+                <p className="text-xs text-black/60 max-w-[360px] mx-auto leading-relaxed">
+                  This meeting either does not exist or you do not have authorization to access its records, transcripts, or briefings.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  onClick={handleCloseMeetingModal}
+                  className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs transition-colors cursor-pointer shadow-xs"
+                >
+                  Return to My Meetings
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Task Extractor Modal */}

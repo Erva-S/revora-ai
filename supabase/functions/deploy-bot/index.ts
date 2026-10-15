@@ -452,6 +452,15 @@ serve(async (req: Request): Promise<Response> => {
           pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503 });
         } else if (dbData) {
           meetingId = dbData.id;
+          try {
+            await supabaseAdmin.rpc('record_meeting_attendees', {
+              p_meeting_id: meetingId,
+              p_organizer_id: userId,
+              p_attendee_emails: [],
+            });
+          } catch (attErr) {
+            console.warn('Record organizer attendee notice:', attErr);
+          }
         }
       } catch {
         pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503 });

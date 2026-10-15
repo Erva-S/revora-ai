@@ -5,23 +5,23 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const formatBriefingData = (raw) => {
   if (!raw) return null;
-  const title = raw.title || raw.meeting_title || 'Upcoming Scheduled Meeting';
+  const title = raw.title || raw.meeting_title || 'Scheduled Meeting';
   return {
     title,
-    recipientEmail: raw.recipientEmail || raw.attendees || raw.recipient_email || 'All Attendees',
+    recipientEmail: raw.recipientEmail || raw.attendees || raw.recipient_email || '',
     status: raw.status || 'Ready',
     summaryContext:
       raw.summaryContext ||
       raw.summary ||
       raw.agenda ||
       raw.context ||
-      `Automated pre-meeting intelligence briefing generated for "${title}". Objectives focused on deliverable sync and architecture review.`,
+      '',
     keyTopics:
       Array.isArray(raw.keyTopics) && raw.keyTopics.length > 0
         ? raw.keyTopics
         : Array.isArray(raw.action_items) && raw.action_items.length > 0
         ? raw.action_items
-        : ['Architecture & Performance Review', 'API Endpoint Alignment', 'Task Assignments'],
+        : [],
   };
 };
 
@@ -81,9 +81,9 @@ const BriefingCard = ({ briefing: initialBriefing }) => {
 
   if (error || !briefing) {
     return (
-      <div className="p-6 rounded-[24px] bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium flex items-center gap-2">
-        <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
-        <span>No active pre-meeting briefings found. Schedule a meeting to generate AI briefings.</span>
+      <div className="p-6 rounded-[24px] bg-neutral-50 border border-black/10 text-neutral-600 text-xs font-medium flex items-center gap-2">
+        <AlertCircle className="w-4 h-4 shrink-0 text-[#0084FF]" />
+        <span>No meetings yet</span>
       </div>
     );
   }

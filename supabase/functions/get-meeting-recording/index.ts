@@ -14,9 +14,11 @@ serve(async (req: Request): Promise<Response> => {
     const lookup = () => auth.user!.from('meetings').select('id,user_id,bot_id,title,recording_metadata').eq('id', body.meeting_id).maybeSingle();
     const meeting = await lookup();
     requireDb(meeting.error, 'Meeting lookup');
-    // Explicit ownership also protects projects still running old permissive RLS.
-    const allowed = (row: any) => row && (auth.isAdmin || row.user_id === auth.userId);
-    if (!meeting.data || !allowed(meeting.data)) throw new RecordingError('MEETING_ACCESS_DENIED', 'Meeting not found or access denied.', 403, 'auth_error');
+    const { data: hasAccess } = await auth.admin.rpc('check_user_meeting_access', {
+      p_meeting_id: body.meeting_id,
+      p_user_id: auth.userId
+    });
+    if (!meeting.data || (!hasAccess && !auth.isAdmin)) throw new RecordingError('MEETING_ACCESS_DENIED', 'Meeting not found or access denied.', 403, 'auth_error');
     const artifact = await fetchVideo(auth.admin, meeting.data, 'bytes=0-31', req.signal, body.action !== 'download');
     await artifact.response.body?.cancel(); artifact.cleanup();
     if (artifact.response.status === 416) {
@@ -25,7 +27,7 @@ serve(async (req: Request): Promise<Response> => {
       throw new RecordingError('RECORDING_PROCESSING', 'No playable recording bytes are available yet. Please try again shortly.', 202, 'processing');
     }
     const current = await lookup();
-    if (current.error || !current.data || !allowed(current.data) || current.data.bot_id !== meeting.data.bot_id)
+    if (current.error || !current.data || current.data.bot_id !== meeting.data.bot_id)
       throw new ContextError('Meeting access changed. Reload the meeting and try again.', 403);
     let url = artifact.url;
     if (body.action === 'download') {

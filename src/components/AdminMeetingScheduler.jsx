@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import { PlusCircle, Calendar, AlignLeft, Sparkles, RefreshCw, Check, Bot, Video, ExternalLink } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { supabase } from '../supabaseClient';
+import { useAuth } from '../context/AuthContext';
 import AttendeePicker from './AttendeePicker';
 import MeetingBotDeployer from './MeetingBotDeployer';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUsers = [], projects = [], currentUserId = '' }) {
+  const { user } = useAuth();
   const [activeMode, setActiveMode] = useState('schedule'); // 'schedule' | 'bot'
   const [title, setTitle] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
@@ -44,12 +46,19 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
       try {
         const res = await fetch(`${API_BASE_URL}/api/briefings`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-email': user?.email || '',
+            'x-user-id': currentUserId || user?.id || '',
+            'x-user-role': 'admin',
+          },
           body: JSON.stringify({
             title: title.trim(),
             recipientEmail: recipientEmail.trim(),
             agenda: agenda.trim(),
             scheduledAt: scheduledAt || null,
+            creatorEmail: user?.email || null,
+            creatorUserId: currentUserId || user?.id || null,
           }),
         });
         if (res.ok) {

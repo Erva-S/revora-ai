@@ -19,6 +19,10 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.47.10';
+import { botCaptureConfig, meetingBaasRequest, meetingBaasTranscriptionConfig, sanitizeKey, transcriptionConfig } from '../_shared/meetingbaas.ts';
+import { elevenLabsConfig } from '../_shared/elevenlabs.ts';
+import { ContextError } from '../_shared/context-utils.ts';
+import { pipelineLog } from '../_shared/pipeline-log.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -41,55 +45,10 @@ function detectPlatform(url: string): string {
   return 'video_call';
 }
 
-function sanitizeKey(rawKey: string | undefined): string {
-  if (!rawKey) return '';
-  return rawKey.replace(/^["'\s]+|["'\s]+$/g, '').trim();
-}
-
-// v2 accepts only these transcription providers and rejects anything else with
-// HTTP 400 — which kills the whole deploy, so the bot never even joins. The
-// legacy value "Default" (still present in the root .env) is one such value.
-// Mirror the reference implementation: normalize, and fall back to gladia.
-const V2_STT_PROVIDERS = new Set(['gladia', 'deepgram', 'assemblyai', 'speechmatics', 'soniox']);
-
-function transcriptionProvider(): string {
-  const raw = sanitizeKey(Deno.env.get('SPEECH_TO_TEXT_PROVIDER')).toLowerCase();
-  if (raw && !V2_STT_PROVIDERS.has(raw)) {
-    console.warn(`[Deploy-Bot] SPEECH_TO_TEXT_PROVIDER="${raw}" is not a v2 provider — using gladia instead.`);
-  }
-  return V2_STT_PROVIDERS.has(raw) ? raw : 'gladia';
-}
-
-// Bare origin for the MeetingBaaS REST API. We append the explicit /v2/...
-// paths ourselves, so strip any trailing slash or version suffix a value
-// like "https://api.meetingbaas.com/v2" might carry.
-function meetingBaasBaseUrl(): string {
-  const raw = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || 'https://api.meetingbaas.com').trim();
-  return raw.replace(/\/+$/, '').replace(/\/v[12]$/i, '');
-}
-
 function buildWebhookUrl(): string {
   const supabaseUrl = (Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co').replace(/\/$/, '');
   const configuredWebhookUrl = Deno.env.get('MEETINGBAAS_WEBHOOK_URL')?.trim();
   return (configuredWebhookUrl || `${supabaseUrl}/functions/v1/meetingbaas-webhook`).replace(/\/+$/, '');
-}
-
-function readResponseError(status: number, rawText: string): string {
-  if (!rawText) {
-    return `MeetingBaaS request failed with HTTP ${status}`;
-  }
-
-  try {
-    const parsed = JSON.parse(rawText);
-    const parts = [parsed?.error_code, parsed?.error, parsed?.message, parsed?.detail].filter(Boolean);
-    if (parts.length > 0) {
-      return `MeetingBaaS request failed with HTTP ${status}: ${parts.join(' | ')}`;
-    }
-  } catch {
-    // Fall through to the raw body text.
-  }
-
-  return `MeetingBaaS request failed with HTTP ${status}: ${rawText}`;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -97,6 +56,69 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 type AdminCaller =
   | { ok: true; userId: string }
   | { ok: false; response: Response };
+type OwnerResolution =
+  | { ownerId: string }
+  | { ownerId: null; error: string };
+
+type DispatchReservation = {
+  id: string;
+  request_key: string;
+  state: 'creating' | 'created' | 'unknown' | 'failed';
+  bot_id?: string | null;
+  meeting_id?: string | null;
+  planned_link?: 'linked' | 'failed' | null;
+  error_message?: string | null;
+  created_now?: boolean;
+};
+
+function validDispatchKey(value: unknown): string | null {
+  const key = String(value ?? '').trim();
+  return key && key.length <= 200 ? key : null;
+}
+
+async function reserveDispatch(
+  supabaseAdmin: any,
+  values: Record<string, unknown>,
+): Promise<DispatchReservation> {
+  const inserted = await supabaseAdmin.from('meeting_bot_dispatches')
+    .insert(values)
+    .select('id,request_key,state,bot_id,meeting_id,planned_link,error_message')
+    .single();
+  if (inserted.data) return { ...(inserted.data as DispatchReservation), created_now: true };
+
+  // request_key and planned_meeting_id are both unique. Reading after a
+  // conflict makes concurrent/retried browser requests adopt the same
+  // reservation rather than POSTing another provider bot.
+  if (inserted.error?.code === '23505') {
+    const byRequest = await supabaseAdmin.from('meeting_bot_dispatches')
+      .select('id,request_key,state,bot_id,meeting_id,planned_link,error_message')
+      .eq('request_key', values.request_key)
+      .maybeSingle();
+    if (byRequest.data) return { ...(byRequest.data as DispatchReservation), created_now: false };
+    if (values.planned_meeting_id) {
+      const byPlan = await supabaseAdmin.from('meeting_bot_dispatches')
+        .select('id,request_key,state,bot_id,meeting_id,planned_link,error_message')
+        .eq('planned_meeting_id', values.planned_meeting_id)
+        .maybeSingle();
+      if (byPlan.data) return { ...(byPlan.data as DispatchReservation), created_now: false };
+    }
+  }
+
+  throw new ContextError(
+    inserted.error?.code && ['42P01', 'PGRST202', 'PGRST204', 'PGRST205'].includes(inserted.error.code)
+      ? 'Meeting lifecycle migration is not installed. Apply the latest Supabase migration before deploying a bot.'
+      : 'Could not reserve this bot dispatch safely; no provider bot was created.',
+    503,
+  );
+}
+
+async function updateDispatch(supabaseAdmin: any, id: string, patch: Record<string, unknown>) {
+  const result = await supabaseAdmin.from('meeting_bot_dispatches').update(patch).eq('id', id);
+  if (result.error) pipelineLog('dispatch_reservation_update_failed', null, String(patch.bot_id || ''), {
+    http_status: 503, database_code: result.error.code,
+  });
+  return result;
+}
 
 // Bot deployment is admin-only. The caller's role is read from public.profiles
 // with the service role (the single trusted source) — never from the request
@@ -207,7 +229,7 @@ async function resolveMeetingOwner(
   serviceRoleKey: string,
   adminUserId: string,
   requestedOwnerId: unknown
-): Promise<{ ownerId: string | null; error?: string }> {
+): Promise<OwnerResolution> {
   const candidate = String(requestedOwnerId ?? '').trim();
   if (!candidate || candidate === adminUserId) {
     return { ownerId: adminUserId };
@@ -245,11 +267,8 @@ serve(async (req: Request): Promise<Response> => {
     return new Response('ok', { headers: corsHeaders });
   }
 
-  const rawApiKey = Deno.env.get('MEETINGBAAS_API_KEY');
-  const cleanKey = sanitizeKey(rawApiKey);
-
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://zddythsszyznsguiuiss.supabase.co';
-  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
+  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
   // Authorization is only ever decided with the real service role key: the anon
   // fallback below cannot read another user's profiles row, so using it here
   // would turn "cannot verify" into "allow".
@@ -274,30 +293,23 @@ serve(async (req: Request): Promise<Response> => {
       const urlParams = new URL(req.url).searchParams;
       const botId = urlParams.get('bot_id');
 
-      if (!botId) {
-        return json({ success: false, error: 'bot_id URL query parameter is required' }, 200);
-      }
-
-      if (cleanKey && !cleanKey.includes('your_meetingbaas')) {
-        const headers = { 'x-meeting-baas-api-key': cleanKey };
-        // v2: ask the bot to leave. (v1 used DELETE /bots/{id}; v2 exposes an
-        // explicit leave action.) Best effort — a bot that already left is fine.
-        try {
-          await fetch(`${meetingBaasBaseUrl()}/v2/bots/${botId}/leave`, { method: 'POST', headers });
-        } catch (_) {}
-      }
-
-      if (SUPABASE_URL && SERVICE_ROLE_KEY) {
-        const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-        await supabaseAdmin
-          .from('meetings')
-          .update({ ended_at: new Date().toISOString() })
-          .eq('bot_id', botId);
-      }
-
-      return json({ success: true, message: `Bot ${botId} requested to leave call` }, 200);
+      if (!botId || !UUID_PATTERN.test(botId)) return json({ success: false, error: 'A valid bot_id UUID is required.' }, 400);
+      const leaveRequestedAt = new Date().toISOString();
+      const leaveStarted = Date.now();
+      const result = await meetingBaasRequest(`/bots/${botId}/leave`, 'POST');
+      const leavePatch: Record<string, string> = { bot_leave_requested_at: leaveRequestedAt };
+      if (result?.already_left) leavePatch.bot_departure_confirmed_at = leaveRequestedAt;
+      const savedLeave = await createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY)
+        .from('meetings').update(leavePatch).eq('bot_id', botId).select('id').maybeSingle();
+      if (savedLeave.error) pipelineLog('bot_leave_timestamp_save_failed', null, botId, { http_status: 503, database_code: savedLeave.error.code });
+      pipelineLog('bot_leave_requested', savedLeave.data?.id || null, botId, {
+        duration_ms: Date.now() - leaveStarted, http_status: 200, leave_trigger_reason: 'admin_eject', already_left: !!result?.already_left,
+      });
+      // Acceptance is not proof of departure. Only provider lifecycle/completion
+      // events set ended_at, and the normal callback still finalizes artifacts.
+      return json({ success: true, already_left: !!result?.already_left, message: 'Bot leave request accepted.' }, 200);
     } catch (delErr: any) {
-      return json({ success: false, error: delErr.message || 'Failed to remove bot' }, 200);
+      return json({ success: false, error: delErr instanceof ContextError ? delErr.message : 'Failed to remove bot' }, delErr instanceof ContextError ? delErr.status : 502);
     }
   }
 
@@ -316,23 +328,139 @@ serve(async (req: Request): Promise<Response> => {
       return json({ success: false, error: 'Request body must be valid JSON' }, 400);
     }
 
-    const meetingUrl = String(payload.meeting_url || payload.meetingUrl || '').trim();
-    const title = payload.title ? String(payload.title).slice(0, 200) : 'Revora';
+    const dispatchKey = validDispatchKey(payload.dispatch_key ?? payload.dispatchKey);
+    if (!dispatchKey && payload.retry_link !== true) {
+      return json({ success: false, error: 'dispatch_key is required and must be at most 200 characters.' }, 400);
+    }
+
+    const requestedPlannedMeetingId = payload.planned_meeting_id ?? payload.plannedMeetingId;
+    const plannedMeetingId = requestedPlannedMeetingId === undefined || requestedPlannedMeetingId === null || requestedPlannedMeetingId === ''
+      ? null : String(requestedPlannedMeetingId).trim();
+    if (plannedMeetingId && !UUID_PATTERN.test(plannedMeetingId))
+      return json({ success: false, error: 'planned_meeting_id must be a valid UUID' }, 400);
+
+    let plannedMeeting: any = null;
+    if (plannedMeetingId) {
+      // Load and validate the planned row before any external provider call.
+      // This read is deliberately service-role-backed because deploy-bot is
+      // already admin-only and the row may be a legacy NULL-owner row.
+      const plannedClient = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+      const plannedResult = await plannedClient.from('planned_meetings')
+        .select('id,project_id,user_id,title,agenda,scheduled_for,meeting_url,status,linked_meeting_id')
+        .eq('id', plannedMeetingId).maybeSingle();
+      if (plannedResult.error) {
+        console.error('[Deploy-Bot] Planned meeting lookup failed:', plannedResult.error.message);
+        return json({ success: false, error: 'Unable to validate the planned meeting. Apply the planned-meetings migration first.' }, 400);
+      }
+      if (!plannedResult.data) return json({ success: false, error: 'Planned meeting not found.' }, 404);
+      plannedMeeting = plannedResult.data;
+      if (plannedMeeting.status === 'cancelled')
+        return json({ success: false, error: 'This planned meeting is cancelled.' }, 409);
+      if (plannedMeeting.status !== 'planned' || plannedMeeting.linked_meeting_id)
+        return json({ success: false, error: 'This planned meeting is already linked to a meeting.' }, 409);
+      if (!plannedMeeting.project_id)
+        return json({ success: false, error: 'The planned meeting has no project assignment.' }, 400);
+      if (!plannedMeeting.user_id)
+        return json({ success: false, error: 'Assign an owner to this planned meeting before deploying the bot.' }, 400);
+
+      // A provider bot may already be running when the post-insert CAS link
+      // fails. Admins can retry only that database link, never dispatch a
+      // second provider bot for the same planned row.
+      if (payload.retry_link === true) {
+        const retryMeetingId = String(payload.meeting_id ?? payload.retry_meeting_id ?? '').trim();
+        if (!UUID_PATTERN.test(retryMeetingId))
+          return json({ success: false, error: 'A valid meeting_id is required to retry the planned link.' }, 400);
+        const retryClient = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+        const retryMeeting = await retryClient.from('meetings').select('id').eq('id', retryMeetingId).maybeSingle();
+        if (retryMeeting.error) return json({ success: false, error: 'Unable to validate the existing meeting for link retry.' }, 400);
+        if (!retryMeeting.data) return json({ success: false, error: 'Meeting not found for planned-link retry.' }, 404);
+        const { data: linked, error: linkError } = await retryClient.rpc('link_planned_meeting', {
+          p_planned_id: plannedMeetingId,
+          p_meeting_id: retryMeetingId,
+        });
+        if (linkError || linked !== true) {
+          console.error('[Deploy-Bot] Planned meeting link retry failed:', linkError?.message || 'CAS rejected');
+          return json({ success: true, meeting_id: retryMeetingId, planned_link: 'failed' }, 200);
+        }
+        return json({ success: true, meeting_id: retryMeetingId, planned_link: 'linked' }, 200);
+      }
+    }
+
+    const meetingUrl = String(payload.meeting_url || payload.meetingUrl || plannedMeeting?.meeting_url || '').trim();
 
     if (!meetingUrl) {
       return json({ success: false, error: 'meeting_url is required' }, 400);
     }
 
-    const owner = await resolveMeetingOwner(
+    const requestedProjectId = String(payload.project_id ?? '').trim();
+    if (requestedProjectId) {
+      if (!UUID_PATTERN.test(requestedProjectId)) return json({ success: false, error: 'project_id must be a valid UUID' }, 400);
+      if (plannedMeeting && requestedProjectId !== plannedMeeting.project_id)
+        return json({ success: false, error: 'project_id conflicts with the planned meeting.' }, 400);
+    }
+    const projectId = plannedMeeting?.project_id || requestedProjectId;
+
+    const requestedOwnerId = payload.assign_to_user_id ?? payload.assignToUserId ?? payload.owner_user_id;
+    const requestedOwner = String(requestedOwnerId ?? '').trim();
+    const plannedOwnerId = plannedMeeting ? plannedMeeting.user_id : null;
+    if (plannedMeeting && requestedOwner && requestedOwner !== plannedOwnerId)
+      return json({ success: false, error: 'The assigned owner conflicts with the planned meeting.' }, 400);
+
+    const requestedTitle = payload.title ? String(payload.title).slice(0, 200) : '';
+    const title = String(plannedMeeting?.title || requestedTitle || 'Revora').slice(0, 200) || 'Revora';
+
+    if (projectId && !UUID_PATTERN.test(projectId)) return json({ success: false, error: 'project_id must be a valid UUID' }, 400);
+
+    // Owner and project validation are independent after planned-row checks.
+    // Do not let an optional context lookup serialize the provider dispatch.
+    const ownerPromise = resolveMeetingOwner(
       SUPABASE_URL,
       AUTHZ_SERVICE_ROLE_KEY,
       auth.userId,
-      payload.assign_to_user_id ?? payload.assignToUserId ?? payload.owner_user_id
+      plannedOwnerId ?? requestedOwnerId,
     );
-    if (!owner.ownerId) {
-      return json({ success: false, error: owner.error || 'Invalid meeting owner' }, 400);
+    const projectPromise = projectId
+      ? createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY).from('projects').select('id').eq('id', projectId).maybeSingle()
+      : Promise.resolve({ data: { id: null }, error: null });
+    const [owner, projectResult] = await Promise.all([ownerPromise, projectPromise]);
+    if (!owner.ownerId) return json({ success: false, error: 'error' in owner ? owner.error : 'Invalid meeting owner' }, 400);
+    if (projectId && (projectResult.error || !projectResult.data)) {
+      return json({ success: false, error: 'Project unavailable. Apply the context migration and choose an existing project.' }, 400);
     }
     const userId: string = owner.ownerId;
+
+    const dispatchRequestedAt = new Date().toISOString();
+    const dispatchStarted = Date.now();
+    const supabaseAdmin = createClient(SUPABASE_URL, AUTHZ_SERVICE_ROLE_KEY);
+    const dispatch = await reserveDispatch(supabaseAdmin, {
+      request_key: dispatchKey,
+      planned_meeting_id: plannedMeetingId,
+      requested_by: auth.userId,
+      owner_id: userId,
+      project_id: projectId || null,
+      meeting_url: meetingUrl,
+      title,
+      platform: detectPlatform(meetingUrl),
+      state: 'creating',
+    });
+
+    if (dispatch.state === 'created' && dispatch.bot_id && dispatch.meeting_id) {
+      pipelineLog('bot_dispatch_duplicate', dispatch.meeting_id, dispatch.bot_id, { duration_ms: Date.now() - dispatchStarted, http_status: 200 });
+      return json({ success: true, duplicate: true, bot_id: dispatch.bot_id, meeting_id: dispatch.meeting_id,
+        assigned_to: userId, status: 'pending', ...(dispatch.planned_link ? { planned_link: dispatch.planned_link } : {}) }, 200);
+    }
+    if (dispatch.state === 'creating' && dispatch.id && !dispatch.created_now) {
+      // A different request currently owns the provider call. Never issue a
+      // second POST while its result is ambiguous or still in flight.
+      return json({ success: true, accepted: true, duplicate: true, status: 'dispatching',
+        message: 'This meeting is already being dispatched. Wait for its lifecycle update.' }, 202);
+    }
+    if (dispatch.state === 'unknown' && !dispatch.bot_id) {
+      return json({ success: false, error: dispatch.error_message || 'The previous provider request had an unknown result. Reconcile it before retrying.' }, 409);
+    }
+    if (dispatch.state === 'failed') {
+      return json({ success: false, error: dispatch.error_message || 'This dispatch request already failed. Start a new deployment.' }, 409);
+    }
 
     const webhookUrl = buildWebhookUrl();
     const webhookSecret = sanitizeKey(Deno.env.get('MEETINGBAAS_WEBHOOK_SECRET'));
@@ -340,162 +468,64 @@ serve(async (req: Request): Promise<Response> => {
     const entryMessage =
       Deno.env.get('BOT_ENTRY_MESSAGE')?.trim() ||
       "Hi, I'm an AI assistant here to take notes for this meeting.";
-    const sttProvider = transcriptionProvider();
+    const stt = transcriptionConfig();
+    // Refuse a new recording if its external transcription cannot be configured.
+    const elevenlabs = stt.provider === 'elevenlabs' ? elevenLabsConfig() : null;
     const botImageUrl = Deno.env.get('BOT_IMAGE_URL')?.trim() || undefined;
 
-    const clampTimeout = (name: string, fallback: number): number => {
-      const n = Number(Deno.env.get(name));
-      return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
-    };
-
-    const waitingRoomTimeout = clampTimeout('BOT_WAITING_ROOM_TIMEOUT', 300);
-    const noOneJoinedTimeout = clampTimeout('BOT_NO_ONE_JOINED_TIMEOUT', 120);
-    const silenceTimeout = clampTimeout('BOT_SILENCE_TIMEOUT', 30);
-
-    // Hybrid dual-compatible payload containing both v1 and v2 property specifications.
-    // v1 properties: webhook_url, speech_to_text, automatic_leave
-    // v2 properties: callback_enabled/config, transcription_enabled/config, timeout_config
+    // Use the actual v2 contract. Creating on speculative fallback endpoints after
+    // a network failure can dispatch a second bot when the first request succeeded.
     const baasPayload = {
       meeting_url: meetingUrl,
       bot_name: botName,
-      recording_mode: 'speaker_view',
+      ...botCaptureConfig(botName),
       entry_message: entryMessage,
       ...(botImageUrl ? { bot_image: botImageUrl } : {}),
-
-      // v1 specification
-      webhook_url: webhookUrl,
-      speech_to_text: {
-        provider: sttProvider,
-      },
-      automatic_leave: {
-        waiting_room_timeout: waitingRoomTimeout,
-        no_one_joined_timeout: noOneJoinedTimeout,
-        silence_timeout: silenceTimeout,
-      },
-
-      // v2 specification
-      transcription_enabled: true,
-      transcription_config: {
-        provider: sttProvider,
-      },
+      ...meetingBaasTranscriptionConfig(stt),
       callback_enabled: true,
       callback_config: {
         url: webhookUrl,
         method: 'POST',
         ...(webhookSecret ? { secret: webhookSecret } : {}),
       },
-      timeout_config: {
-        waiting_room_timeout: waitingRoomTimeout,
-        no_one_joined_timeout: noOneJoinedTimeout,
-        silence_timeout: silenceTimeout,
-      },
+      extra: { revora: { bot_name: botName, transcription_provider: stt.provider,
+        ...(elevenlabs ? { transcription_model: elevenlabs.model } : {}) } },
     };
 
-    let botId: string | null = null;
+    let botId: string | null = dispatch.bot_id || null;
     let dispatchError: string | null = null;
 
-    if (cleanKey && !cleanKey.includes('your_meetingbaas_key_here')) {
-      const baseUrl = meetingBaasBaseUrl();
-      // Determine primary and secondary endpoints.
-      // If MEETINGBAAS_API_BASE_URL explicitly ends with /v1, try v1 first then v2 fallback.
-      // Otherwise, default to v2 first (for v2 keys) then v1 fallback.
-      const rawEnvUrl = (Deno.env.get('MEETINGBAAS_API_BASE_URL') || '').trim();
-      const preferV1 = /\/v1\/?$/i.test(rawEnvUrl);
-
-      const endpoints = preferV1
-        ? [`${baseUrl}/v1/bots`, `${baseUrl}/bots`, `${baseUrl}/v2/bots`]
-        : [`${baseUrl}/v2/bots`, `${baseUrl}/v1/bots`, `${baseUrl}/bots`];
-
-      const cleanEndpoints = [...new Set(endpoints)];
-
-      for (const endpoint of cleanEndpoints) {
-        try {
-          console.log(`[Deploy-Bot] POSTing dispatch request to ${endpoint}...`);
-          const baasResp = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-meeting-baas-api-key': cleanKey,
-            },
-            body: JSON.stringify(baasPayload),
-          });
-
-          const rawText = await baasResp.text();
-          let baasData: any = {};
-          try {
-            baasData = rawText ? JSON.parse(rawText) : {};
-          } catch {
-            baasData = { message: rawText };
-          }
-
-          if (!baasResp.ok) {
-            const errDetail = readResponseError(baasResp.status, rawText);
-            console.warn(`[Deploy-Bot Warning] Endpoint ${endpoint} returned HTTP ${baasResp.status}:`, rawText);
-
-            // If we hit wrong platform key or 404, attempt next endpoint fallback in list
-            if (
-              (baasResp.status === 401 && rawText.includes('WrongPlatformApiKey')) ||
-              baasResp.status === 404
-            ) {
-              dispatchError = errDetail;
-              continue;
-            }
-
-            dispatchError = errDetail;
-            console.error('[Deploy-Bot Error] MeetingBaaS rejected bot request:', {
-              endpoint,
-              status: baasResp.status,
-              body: rawText,
-            });
-            break;
-          } else {
-            // Envelope format check: v2 uses data.bot_id, v1 uses bot_id or id directly
-            botId = String(baasData?.data?.bot_id || baasData?.bot_id || baasData?.id || '').trim();
-            if (!botId) {
-              dispatchError = `MeetingBaaS returned HTTP ${baasResp.status} without a valid bot_id: ${rawText || '<empty response>'}`;
-              console.error('[Deploy-Bot Error] Missing bot_id in response from:', endpoint);
-            } else {
-              console.log(`[Deploy-Bot Success] Bot launched via ${endpoint}: bot_id=${botId}`);
-              dispatchError = null;
-              break;
-            }
-          }
-        } catch (netErr: any) {
-          dispatchError = netErr?.message || String(netErr) || 'MeetingBaaS network request failed';
-          console.error(`[Deploy-Bot Network Error] Unable to reach ${endpoint}:`, netErr);
-        }
+    try {
+      if (!botId) {
+        const providerStarted = Date.now();
+        const result = await meetingBaasRequest('/bots', 'POST', baasPayload, 1);
+        const candidate = String(result?.bot_id || '').trim();
+        if (!UUID_PATTERN.test(candidate)) throw new ContextError('MeetingBaaS returned no valid bot_id. Check the provider dashboard before retrying.', 502);
+        botId = candidate;
+        await updateDispatch(supabaseAdmin, dispatch.id, { bot_id: botId, error_message: null });
+        pipelineLog('bot_creation_accepted', null, botId, {
+          duration_ms: Date.now() - providerStarted, total_dispatch_ms: Date.now() - dispatchStarted,
+          http_status: 201,
+        });
       }
-    } else {
-      dispatchError = 'MEETINGBAAS_API_KEY is missing or invalid';
-      console.error('[Deploy-Bot Error] MeetingBaaS API key is not configured');
+    } catch (error) {
+      dispatchError = error instanceof ContextError ? error.message : 'MeetingBaaS bot creation failed.';
+      await updateDispatch(supabaseAdmin, dispatch.id, { state: 'unknown', error_message: dispatchError });
+      pipelineLog('bot_creation_unknown', null, botId, {
+        duration_ms: Date.now() - dispatchStarted, http_status: 502, terminal_failure_reason: dispatchError,
+      });
     }
 
     if (!botId) {
-      if (SUPABASE_URL && SERVICE_ROLE_KEY) {
-        try {
-          const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-          await supabaseAdmin.from('meetings').insert({
-            user_id: userId,
-            meeting_url: meetingUrl,
-            platform: detectPlatform(meetingUrl),
-            title: title,
-            status: 'failed',
-            error_message: dispatchError || 'Failed to dispatch MeetingBaaS bot',
-            started_at: new Date().toISOString(),
-          });
-        } catch (failedDbErr) {
-          console.error('[Deploy-Bot Failure DB Error]:', failedDbErr);
-        }
-      }
-
       return json(
         {
           success: false,
           error: dispatchError || 'Failed to dispatch MeetingBaaS bot',
           meeting_url: meetingUrl,
           webhook_url: webhookUrl,
+          dispatch_key: dispatchKey,
         },
-        502
+        503
       );
     }
 
@@ -503,36 +533,85 @@ serve(async (req: Request): Promise<Response> => {
     let meetingId: string | null = null;
     if (SUPABASE_URL && SERVICE_ROLE_KEY) {
       try {
-        const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
         const { data: dbData, error: dbError } = await supabaseAdmin
           .from('meetings')
-          .insert({
+          .upsert({
             user_id: userId,
+            ...(projectId ? { project_id: projectId } : {}),
             bot_id: botId,
             meeting_url: meetingUrl,
             platform: detectPlatform(meetingUrl),
             title: title,
+            transcription_provider: stt.provider,
             status: 'pending',
-            started_at: new Date().toISOString(),
-          })
+            processing_stage: 'bot_dispatched',
+            bot_creation_requested_at: dispatchRequestedAt,
+          }, { onConflict: 'bot_id' })
           .select('id, bot_id, status')
           .single();
 
         if (dbError) {
-          console.error('[Deploy-Bot DB Error]:', dbError);
+          await updateDispatch(supabaseAdmin, dispatch.id, {
+            state: 'unknown', bot_id: botId, error_message: 'Provider bot was created but meeting ownership could not be saved.',
+          });
+          pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503, duration_ms: Date.now() - dispatchStarted });
         } else if (dbData) {
           meetingId = dbData.id;
+          try {
+            await supabaseAdmin.rpc('record_meeting_attendees', {
+              p_meeting_id: meetingId,
+              p_organizer_id: userId,
+              p_attendee_emails: [],
+            });
+          } catch (attendeeErr) {
+            console.warn('[deploy-bot] Non-blocking attendee recording warning:', attendeeErr);
+          }
         }
-      } catch (dbErr) {
-        console.error('[Deploy-Bot DB Exception]:', dbErr);
+      } catch {
+        await updateDispatch(supabaseAdmin, dispatch.id, {
+          state: 'unknown', bot_id: botId, error_message: 'Provider bot was created but meeting ownership could not be saved.',
+        });
+        pipelineLog('bot_ownership_save_failed', null, botId, { http_status: 503, duration_ms: Date.now() - dispatchStarted });
       }
     }
+
+    if (!meetingId) return json({ success: false, bot_id: botId, dispatched: true,
+      dispatch_key: dispatchKey,
+      error: 'The bot was dispatched, but meeting ownership could not be saved. Retry with the same dispatch_key to adopt it; do not create a second bot.' }, 503);
+
+    let plannedLink: 'linked' | 'failed' | undefined;
+    if (plannedMeetingId) {
+      try {
+        const { data: linked, error: linkError } = await supabaseAdmin.rpc('link_planned_meeting', {
+          p_planned_id: plannedMeetingId,
+          p_meeting_id: meetingId,
+        });
+        if (linkError || linked !== true) {
+          plannedLink = 'failed';
+          console.error('[Deploy-Bot] Planned meeting link failed:', linkError?.message || 'CAS rejected');
+          pipelineLog('planned_link_failed', meetingId, botId, { http_status: 503 });
+        } else {
+          plannedLink = 'linked';
+        }
+      } catch (linkError) {
+        plannedLink = 'failed';
+        console.error('[Deploy-Bot] Planned meeting link failed:', linkError instanceof Error ? linkError.message : String(linkError));
+        pipelineLog('planned_link_failed', meetingId, botId, { http_status: 503 });
+      }
+    }
+
+    await updateDispatch(supabaseAdmin, dispatch.id, {
+      state: 'created', bot_id: botId, meeting_id: meetingId, planned_link: plannedLink || null, error_message: null,
+    });
+    pipelineLog('bot_dispatch_persisted', meetingId, botId, {
+      duration_ms: Date.now() - dispatchStarted, http_status: 200, planned_link: plannedLink || null,
+    });
 
     return json(
       {
         success: true,
         bot_id: botId,
-        bot_name: 'Revora Assistant',
+        bot_name: botName,
         recording_mode: 'speaker_view',
         meeting_id: meetingId,
         assigned_to: userId,
@@ -540,11 +619,13 @@ serve(async (req: Request): Promise<Response> => {
         is_simulated: false,
         meeting_url: meetingUrl,
         webhook_url: webhookUrl,
+        dispatch_key: dispatchKey,
+        ...(plannedLink ? { planned_link: plannedLink } : {}),
       },
       200
     );
   } catch (err: any) {
-    console.error('[Deploy-Bot Fatal Exception]:', err);
-    return json({ success: false, error: err.message || 'Internal server error' }, 500);
+    pipelineLog('bot_dispatch_failed', null, null, { http_status: 500 });
+    return json({ success: false, error: err instanceof ContextError ? err.message : 'Internal server error' }, 500);
   }
 });

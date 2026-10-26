@@ -125,8 +125,8 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 bg-white/50">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#0084FF] to-[#0066CC] flex items-center justify-center text-white shadow-md">
-                <Bot className="w-5 h-5" />
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0">
+                <img src="/revora-icon.png" alt="Revora" className="w-9 h-9 object-contain" />
               </div>
               <div>
                 <h3 className="font-outfit font-bold text-[18px] text-black leading-tight flex items-center gap-2">
@@ -183,7 +183,7 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
                       : 'bg-gradient-to-br from-[#0084FF] to-[#0066CC] shadow-xs'
                   }`}
                 >
-                  {msg.role === 'user' ? 'You' : <Bot className="w-4 h-4" />}
+                  {msg.role === 'user' ? 'You' : <img src="/revora-icon.png" alt="Revora" className="w-5 h-5 object-contain" />}
                 </div>
 
                 <div className="group relative">
@@ -226,8 +226,8 @@ export default function TryAssistModal({ isOpen, onClose, initialPrompt = '' }) 
                 animate={{ opacity: 1 }}
                 className="flex items-center gap-3"
               >
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#0084FF] to-[#0066CC] flex items-center justify-center text-white">
-                  <Bot className="w-4 h-4" />
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
+                  <img src="/revora-icon.png" alt="Revora" className="w-6 h-6 object-contain" />
                 </div>
                 <div className="px-4 py-3 rounded-[20px] rounded-tl-xs bg-white border border-black/5 text-xs text-black/60 flex items-center gap-2 shadow-xs">
                   <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#0084FF]" />

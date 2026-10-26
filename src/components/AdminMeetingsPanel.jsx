@@ -1,13 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import ActionItemCard from './ActionItemCard';
+import ContextBriefingSection from './ContextBriefingSection';
+import MeetingProjectAssignment from './MeetingProjectAssignment';
+import MeetingRecordingLink from './MeetingRecordingLink';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
-import { Video, RefreshCw, Clock, ExternalLink, AlertCircle, Bot, Users } from 'lucide-react';
+import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
+import { applyMeetingChange, isActiveMeeting, mergeMeetingRows, subscribeToMeetingChanges } from '../lib/meetingRealtime';
+import { RefreshCw, Clock, AlertCircle, Bot, Users, Building2, FolderGit2 } from 'lucide-react';
 
 /**
  * Admin-side meeting monitor.
  *
- * Read-only view over the meetings the admin is allowed to read (RLS grants
+ * Meeting monitor with additive project assignment (RLS grants
  * admins every row via public.is_admin()): bot id, pipeline status, and the
  * post-meeting results produced by the existing webhook + Gemini pipeline
  * (recording, summary, transcript, action items).
@@ -19,7 +24,21 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
+  const [linkedPlannedMeeting, setLinkedPlannedMeeting] = useState(null);
   const [error, setError] = useState(null);
+  const requestVersion = useRef(0);
+  const refreshTimer = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLinkedPlannedMeeting(null);
+    if (!selected?.id) return () => { cancelled = true; };
+    supabase.from('planned_meetings').select('*').eq('linked_meeting_id', selected.id).maybeSingle()
+      .then(({ data, error: lookupError }) => {
+        if (!cancelled && !lookupError) setLinkedPlannedMeeting(data || null);
+      });
+    return () => { cancelled = true; };
+  }, [selected?.id]);
 
   const ownerLabel = (userId) => {
     if (!userId) return 'Admins only';
@@ -27,79 +46,106 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
     return match?.email || match?.name || userId;
   };
 
-  const fetchMeetings = async () => {
+  const fetchMeetings = async ({ silent = false } = {}) => {
+    const requestId = ++requestVersion.current;
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const { data, error: queryError } = await supabase
         .from('meetings')
-        .select('*')
+        .select('*, projects(id, name, clients(id, name)), clients(id, name)')
         .order('created_at', { ascending: false });
 
       if (queryError) throw queryError;
-      setMeetings(data || []);
+      if (requestId < requestVersion.current) return;
+      setMeetings((current) => mergeMeetingRows(current, data || []));
       setError(null);
+
+      // Keep the detail modal in sync: if a meeting is currently selected,
+      // refresh it from the latest data so the user sees live status updates
+      // without closing and re-opening the modal.
+      setSelected((prev) => {
+        if (!prev || !data) return prev;
+         const updated = data.find((m) => m.id === prev.id);
+         return updated || prev;
+      });
     } catch (err) {
       console.error('Admin meetings query failed:', err);
       setError(err.message || 'Failed to load meetings.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   // Refetch on mount, when a bot is deployed (refreshKey bumps), and on any
   // realtime change the webhook writes while a meeting is being processed.
   useEffect(() => {
+    const scheduleRefresh = () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      refreshTimer.current = setTimeout(() => { fetchMeetings({ silent: true }); }, 250);
+    };
     fetchMeetings();
 
-    let channel = null;
-    try {
-      channel = supabase
-        .channel('admin_meetings_monitor')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => {
-          fetchMeetings();
-        })
-        .subscribe();
-    } catch (realtimeErr) {
-      console.warn('Admin realtime subscription notice:', realtimeErr);
-    }
+    const unsubscribe = subscribeToMeetingChanges('admin_meetings_monitor', {
+      onChange: (payload) => {
+        setMeetings((current) => applyMeetingChange(current, payload));
+        if (payload?.new?.id) {
+          setSelected((current) => {
+            if (!current || current.id !== payload.new.id) return current;
+            return mergeMeetingRows([current], [payload.new])[0] || current;
+          });
+        }
+        scheduleRefresh();
+      },
+      onStatus: (status, realtimeErr) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Admin realtime subscription notice:', realtimeErr?.message || status);
+          fetchMeetings({ silent: true });
+        }
+      },
+    });
+
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') fetchMeetings({ silent: true });
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    const pollId = setInterval(() => fetchMeetings({ silent: true }), 5000);
 
     return () => {
-      if (channel) {
-        try {
-          supabase.removeChannel(channel);
-        } catch (_) {}
-      }
+      unsubscribe();
+      clearInterval(pollId);
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
     };
   }, [refreshKey]);
 
-  const activeCount = meetings.filter(
-    (m) => m.status === 'pending' || m.status === 'scheduled' || m.status === 'recording'
-  ).length;
+  const activeCount = meetings.filter(isActiveMeeting).length;
 
   return (
-    <div className="p-6 sm:p-8 rounded-[28px] bg-white border border-slate-200/80 shadow-xs space-y-5 font-sans">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+    <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-4 font-sans">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
         <div>
-          <h3 className="font-outfit font-bold text-xl text-slate-900 flex items-center gap-2">
-            <Bot className="w-5 h-5 text-[#0084FF]" />
-            Meeting &amp; Bot Monitor
+          <h3 className="font-outfit font-bold text-base text-slate-900 flex items-center gap-2">
+            <img src="/revora-icon.png" alt="Revora" className="w-4 h-4 object-contain" />
+            Meeting Monitor
           </h3>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Real-time bot status, transcripts, recordings, summaries, and action items for every meeting.
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            Bot status, transcripts, recordings, summaries, and action items.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          <span className="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200/80 text-[11px] font-mono font-bold text-slate-600">
-            {meetings.length} total • {activeCount} active
+        <div className="flex items-center gap-2">
+          <span className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200/80 text-[10px] font-mono font-semibold text-slate-600">
+            {meetings.length} total · {activeCount} active
           </span>
           <button
             onClick={fetchMeetings}
             disabled={loading}
-            className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer w-fit"
+            className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200/80 text-slate-500 transition-colors cursor-pointer"
+            title="Refresh meetings"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-[#0084FF]' : ''}`} />
-            <span>Refresh</span>
           </button>
         </div>
       </div>
@@ -116,7 +162,7 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
           meetings.map((m) => (
             <div
               key={m.id}
-              className="p-5 rounded-2xl bg-slate-50/70 border border-slate-200/80 hover:bg-sky-50/40 hover:border-sky-200/80 transition-all space-y-3"
+              className="p-4 rounded-xl bg-slate-50/70 border border-slate-200/80 hover:bg-sky-50/30 hover:border-sky-200/80 transition-all space-y-2"
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="space-y-1.5 min-w-0">
@@ -137,6 +183,22 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
                     <Users className="w-3 h-3 text-slate-400" />
                     Visible to: <span className="font-bold text-slate-700">{ownerLabel(m.user_id)}</span>
                   </p>
+                  {(m.clients?.name || m.projects?.clients?.name || m.projects?.name) && (
+                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                      {(m.clients?.name || m.projects?.clients?.name) && (
+                        <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10px] font-semibold flex items-center gap-1 border border-slate-200/60">
+                          <Building2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                          <span>{m.clients?.name || m.projects?.clients?.name}</span>
+                        </span>
+                      )}
+                      {m.projects?.name && (
+                        <span className="px-2 py-0.5 rounded-md bg-sky-50 text-[#0084FF] text-[10px] font-semibold flex items-center gap-1 border border-sky-100">
+                          <FolderGit2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                          <span>{m.projects.name}</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-3 text-xs shrink-0">
@@ -182,8 +244,8 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
       {/* Meeting Details Modal (Light Mode) */}
       {selected && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-          <div className="bg-white rounded-[28px] max-w-[680px] w-full p-6 space-y-5 border border-slate-200 shadow-2xl max-h-[85vh] overflow-y-auto">
-            <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-100">
+          <div className="bg-white rounded-2xl max-w-[680px] w-full p-5 space-y-4 border border-slate-200 shadow-2xl max-h-[85vh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-4 pb-3 border-b border-slate-100">
               <div className="min-w-0">
                 <h3 className="font-outfit font-bold text-xl text-slate-900 truncate">
                   {selected.title || 'Meeting Results'}
@@ -194,6 +256,22 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
                 <p className="text-[11px] text-slate-500 font-mono mt-0.5">
                   Stage: {meetingStageLabel(selected)} • Visible to: {ownerLabel(selected.user_id)}
                 </p>
+                {(selected.clients?.name || selected.projects?.clients?.name || selected.projects?.name) && (
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {(selected.clients?.name || selected.projects?.clients?.name) && (
+                      <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10px] font-semibold flex items-center gap-1 border border-slate-200/60">
+                        <Building2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                        <span>Client: {selected.clients?.name || selected.projects?.clients?.name}</span>
+                      </span>
+                    )}
+                    {selected.projects?.name && (
+                      <span className="px-2 py-0.5 rounded-md bg-sky-50 text-[#0084FF] text-[10px] font-semibold flex items-center gap-1 border border-sky-100">
+                        <FolderGit2 className="w-2.5 h-2.5 text-[#0084FF]" />
+                        <span>Project: {selected.projects.name}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               <button
                 onClick={() => setSelected(null)}
@@ -203,20 +281,17 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
               </button>
             </div>
 
-            {selected.recording_url && (
-              <a
-                href={selected.recording_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between p-3.5 rounded-2xl bg-[#0084FF]/5 border border-[#0084FF]/20 hover:bg-[#0084FF]/10 transition-colors group"
-              >
-                <span className="flex items-center gap-2.5 text-sm font-bold text-[#0084FF]">
-                  <Video className="w-4 h-4" />
-                  Watch Meeting Recording
-                </span>
-                <ExternalLink className="w-4 h-4 text-[#0084FF]/70 group-hover:text-[#0084FF]" />
-              </a>
-            )}
+             <MeetingProjectAssignment key={selected.id} meeting={selected} onAssigned={(updated) => {
+               setSelected(updated);
+               setMeetings((current) => current.map((m) => m.id === updated.id ? updated : m));
+             }} />
+              <ContextBriefingSection key={`${selected.id}:${selected.project_id || ''}`} meeting={selected} />
+              {linkedPlannedMeeting && <section className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Pre-meeting briefing</h4>
+                <ContextBriefingSection key={`planned:${linkedPlannedMeeting.id}`} plannedMeeting={linkedPlannedMeeting} readOnly />
+              </section>}
+
+               {(selected.bot_id || selected.recording_url) && <MeetingRecordingLink key={selected.id} meeting={selected} />}
 
             {selected.summary && (
               <div className="space-y-2">
@@ -232,12 +307,12 @@ export default function AdminMeetingsPanel({ refreshKey = 0, users = [] }) {
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Full Transcript</h4>
                   <span className="text-[11px] font-mono text-slate-500">
-                    {selected.transcript.split('\n').filter(Boolean).length} dialogue turns •{' '}
+                    {transcriptParagraphs(selected).length} dialogue turns •{' '}
                     {selected.transcript.length} characters
                   </span>
                 </div>
                 <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-h-[320px] overflow-y-auto shadow-inner">
-                  {selected.transcript}
+                  {transcriptDisplayText(selected)}
                 </div>
               </div>
             )}

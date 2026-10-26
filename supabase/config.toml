@@ -7,3 +7,24 @@ verify_jwt = true
 # MeetingBaaS cannot present a Supabase JWT. This endpoint authenticates
 # with MEETINGBAAS_WEBHOOK_SECRET instead (see the function source).
 verify_jwt = false
+
+[functions.index-meeting-context]
+verify_jwt = true
+
+[functions.generate-briefing]
+verify_jwt = true
+
+[functions.get-meeting-recording]
+verify_jwt = true
+
+[functions.download-meeting-recording]
+# Native browser file GETs use a short-lived signed user/meeting grant instead
+# of session headers. The handler verifies it and rechecks ownership/admin role.
+verify_jwt = false
+
+[functions.elevenlabs-webhook]
+# ElevenLabs HMAC is verified against the raw request body in the handler.
+verify_jwt = false
+
+[functions.process-elevenlabs-transcription]
+verify_jwt = true

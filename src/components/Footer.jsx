@@ -45,11 +45,12 @@ export default function Footer({ onOpenTryModal }) {
         <div className="grid grid-cols-1 md:grid-cols-12 gap-10 pb-12 border-b border-white/10">
           {/* Brand Col (4 cols) */}
           <div className="md:col-span-4 flex flex-col gap-4">
-            <div className="font-fustat font-extrabold text-[24px] tracking-tight text-white flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-[#0084FF] flex items-center justify-center text-white">
-                <Bot className="w-5 h-5" />
-              </div>
-              <span>Revora.</span>
+            <div className="flex items-center gap-2 p-2 rounded-xl bg-white/95 border border-white/20 w-fit shadow-xs">
+              <img
+                src="/revora-logo.png"
+                alt="Revora"
+                className="h-7 sm:h-8 w-auto object-contain"
+              />
             </div>
 
             <p className="font-sans text-[14px] text-neutral-400 max-w-[320px] leading-relaxed">

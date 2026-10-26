@@ -1,34 +1,24 @@
+require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 const express = require('express');
 const cors = require('cors');
 const sequelize = require('./db');
 const briefingRoutes = require('./routes/briefings');
+const { startScheduler } = require('./scheduler');
 
 const app = express();
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
 
-// Admin Authentication Route
-app.post('/api/admin/login', (req, res) => {
-  const { adminId, password } = req.body;
-  
-  const validId = process.env.ADMIN_ID || 'admin';
-  const validPass = process.env.ADMIN_PASSWORD || 'SuperSecretPassword123!';
-
-  if (adminId === validId && password === validPass) {
-    return res.json({ success: true, token: 'revora-admin-authenticated' });
-  } else {
-    return res.status(401).json({ success: false, message: 'Invalid Admin ID or Password' });
-  }
-});
-
-// Routes
+// Briefings & Automated Meeting Email Dispatch
 app.use('/api/briefings', briefingRoutes);
 
-// Sync database and start server
-sequelize.sync({ force: false }).then(() => {
+// Sync database schema and start server
+sequelize.sync({ alter: true }).then(() => {
   console.log('SQLite database synced.');
+  startScheduler();
+  console.log('Meeting reminder scheduler started.');
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });

@@ -2,33 +2,27 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
 import { Users, Search, Check, X, UserPlus } from 'lucide-react';
 
-// Default mock employee roster if profiles table is empty
-const DEFAULT_EMPLOYEES = [
-  { id: '1', name: 'Rudrik Kakadiya', email: 'rudrikakadiya26@gmail.com', role: 'Fullstack Dev', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face' },
-  { id: '2', name: 'Charusat Admin', email: '25cs027@charusat.edu.in', role: 'Team Lead', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&crop=face' },
-  { id: '3', name: 'Alex Rivera', email: 'alex.rivera@revora.ai', role: 'Product Manager', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=80&h=80&fit=crop&crop=face' },
-  { id: '4', name: 'Sarah Chen', email: 'sarah.c@revora.ai', role: 'AI Engineer', avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=80&h=80&fit=crop&crop=face' },
-  { id: '5', name: 'David Kumar', email: 'david.k@revora.ai', role: 'Backend Lead', avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=80&h=80&fit=crop&crop=face' }
-];
-
 export default function AttendeePicker({ selectedEmails = [], onChange }) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
+  const [employees, setEmployees] = useState([]);
 
-  // Fetch real users from Supabase profiles table if available
+  // Fetch real users from Supabase profiles table
   useEffect(() => {
     async function loadDirectory() {
       try {
         const { data, error } = await supabase.from('profiles').select('id, full_name, email, role, avatar_url');
         if (!error && data && data.length > 0) {
-          const formatted = data.map(d => ({
-            id: d.id,
-            name: d.full_name || d.name || d.email.split('@')[0],
-            email: d.email,
-            role: d.role || 'Member',
-            avatar: d.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face'
-          }));
+          const formatted = data.map(d => {
+            const isDesignatedAdmin = (d.email || '').trim().toLowerCase() === 'evv18407@gmail.com';
+            return {
+              id: d.id,
+              name: d.full_name || d.name || d.email.split('@')[0],
+              email: d.email,
+              role: isDesignatedAdmin ? 'Admin' : 'Member',
+              avatar: d.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(d.full_name || d.email)}`
+            };
+          });
           setEmployees(formatted);
         }
       } catch (_) {}
@@ -114,6 +108,28 @@ export default function AttendeePicker({ selectedEmails = [], onChange }) {
             />
           </div>
 
+          <div className="flex items-center justify-between px-1 text-[11px]">
+            <button
+              type="button"
+              onClick={() => {
+                const allEmails = employees.map(e => e.email).filter(Boolean);
+                onChange(allEmails.join(', '));
+              }}
+              className="font-bold text-[#0084FF] hover:underline cursor-pointer"
+            >
+              + Select All ({employees.length}) Members
+            </button>
+            {currentSelected.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onChange('')}
+                className="font-semibold text-slate-400 hover:text-red-500 cursor-pointer"
+              >
+                Clear Selection
+              </button>
+            )}
+          </div>
+
           <div className="max-h-[180px] overflow-y-auto space-y-1 pr-1">
             {filteredEmployees.map((emp) => {
               const isSelected = currentSelected.includes(emp.email);
@@ -136,9 +152,15 @@ export default function AttendeePicker({ selectedEmails = [], onChange }) {
                     <div className="text-left">
                       <div className="text-xs font-bold text-black leading-tight flex items-center gap-1.5">
                         <span>{emp.name}</span>
-                        <span className="text-[9px] font-normal px-1.5 py-0.2 rounded-md bg-black/5 text-black/60">
-                          {emp.role}
-                        </span>
+                        {emp.role === 'Admin' ? (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200">
+                            Admin
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-normal px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-500">
+                            Member
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] text-black/50">{emp.email}</div>
                     </div>

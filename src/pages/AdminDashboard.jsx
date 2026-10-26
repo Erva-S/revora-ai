@@ -2,36 +2,60 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
-import AttendeePicker from '../components/AttendeePicker';
+import AdminMeetingScheduler from '../components/AdminMeetingScheduler';
 import MeetingCalendar from '../components/MeetingCalendar';
-import MeetingBotDeployer from '../components/MeetingBotDeployer';
 import AdminMeetingsPanel from '../components/AdminMeetingsPanel';
+import PlannedMeetingsPanel from '../components/PlannedMeetingsPanel';
+import AdminClientManager from '../components/AdminClientManager';
 import { 
-  ShieldCheck, LogOut, Users, Database, RefreshCw, Lock, Check, 
+  ShieldCheck, LogOut, Users, RefreshCw, Lock, Check, 
   Trash2, Calendar, Send, ShieldAlert, ArrowLeft, PlusCircle, X, 
-  AlignLeft, Bot, Activity, Shield
+  AlignLeft, Activity, Shield, Database, Building2
 } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function AdminDashboard({ onNavigateHome }) {
   const { user, logout, loading } = useAuth();
   const navigate = useNavigate();
   const [usersList, setUsersList] = useState([]);
-  const [meetingsList, setMeetingsList] = useState([]);
-  const [briefingsList, setBriefingsList] = useState([]);
+  const [projectsList, setProjectsList] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [actionMessage, setActionMessage] = useState(null);
-  const [selectedMeeting, setSelectedMeeting] = useState(null);
-
-  // Meeting Creation Modal States
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [meetingTitle, setMeetingTitle] = useState('');
-  const [recipientEmail, setRecipientEmail] = useState('');
-  const [meetingDetails, setMeetingDetails] = useState('');
-  const [scheduledAt, setScheduledAt] = useState('');
-  const [creatingMeeting, setCreatingMeeting] = useState(false);
   const [meetingsRefreshKey, setMeetingsRefreshKey] = useState(0);
+  const [adminMeetingsList, setAdminMeetingsList] = useState([]);
+  const [adminBriefingsList, setAdminBriefingsList] = useState([]);
+  const [adminPlannedMeetingsList, setAdminPlannedMeetingsList] = useState([]);
+
+  // Fetch all meetings, planned sessions, and briefings for calendar
+  const fetchCalendarData = async () => {
+    try {
+      const [meetingsRes, plannedRes] = await Promise.all([
+        supabase.from('meetings').select('*').order('created_at', { ascending: false }),
+        supabase.from('planned_meetings').select('*').order('scheduled_for', { ascending: true }),
+      ]);
+      if (!meetingsRes.error && meetingsRes.data) {
+        setAdminMeetingsList(meetingsRes.data);
+      }
+      if (!plannedRes.error && plannedRes.data) {
+        setAdminPlannedMeetingsList(plannedRes.data);
+      }
+    } catch (_) {}
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
+        headers: {
+          'x-user-email': user?.email || '',
+          'x-user-id': user?.id || '',
+          'x-user-role': 'admin',
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminBriefingsList(Array.isArray(data) ? data : []);
+      }
+    } catch (_) {}
+  };
 
   const handleSignOut = async () => {
     await logout();
@@ -73,89 +97,28 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
-  // Fetch meetings list from Supabase
-  const fetchMeetings = async () => {
+  const fetchProjects = async () => {
     try {
-      const { data, error } = await supabase
-        .from('meetings')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (!error && data) {
-        setMeetingsList(data);
-      }
+      const { data, error } = await supabase.from('projects').select('id,name,clients(name)').order('name');
+      if (error) throw error;
+      setProjectsList(data || []);
     } catch (err) {
-      console.warn('Admin meetings query notice:', err);
-    }
-  };
-
-  // Fetch briefings list from backend
-  const fetchBriefings = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/briefings`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data) ? data : (data.briefings || []);
-        setBriefingsList(list);
-      }
-    } catch (err) {
-      console.warn('Admin briefings query notice:', err);
+      console.warn('Failed to fetch projects list from Supabase:', err);
+      setProjectsList([]);
     }
   };
 
   useEffect(() => {
-    if (user && user.role === 'admin') {
-      fetchUsers();
-      fetchMeetings();
-      fetchBriefings();
-    }
-  }, [user]);
-
-  // Handle Create & Dispatch Scheduled Meeting Briefing
-  const handleCreateMeeting = async (e) => {
-    e.preventDefault();
-    if (!meetingTitle || !recipientEmail || !scheduledAt) {
-      alert('Please fill out the meeting title, attendee email, and scheduled date/time.');
+    if (!loading && (!user || user.role !== 'admin')) {
+      navigate('/dashboard', { replace: true });
       return;
     }
-
-    setCreatingMeeting(true);
-    setActionMessage(null);
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: meetingTitle,
-          recipientEmail: recipientEmail,
-          agenda: meetingDetails,
-          scheduledAt: scheduledAt,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        setActionMessage(`Meeting scheduled! Briefing generated and dispatched to ${recipientEmail}.`);
-        setMeetingTitle('');
-        setRecipientEmail('');
-        setMeetingDetails('');
-        setScheduledAt('');
-        setIsCreateModalOpen(false);
-        await fetchBriefings();
-        await fetchMeetings();
-        setTimeout(() => setActionMessage(null), 6000);
-      } else {
-        alert(data.error || 'Failed to schedule meeting.');
-      }
-    } catch (err) {
-      console.error('Error creating meeting:', err);
-      alert('Server connection error. Ensure node index.js is active on port 5001.');
-    } finally {
-      setCreatingMeeting(false);
+    if (user && user.role === 'admin') {
+      fetchUsers();
+      fetchProjects();
+      fetchCalendarData();
     }
-  };
+  }, [user, loading, navigate]);
 
   // Toggle user role in Supabase profiles
   const handleToggleRole = async (targetUserId, currentRole) => {
@@ -197,9 +160,10 @@ export default function AdminDashboard({ onNavigateHome }) {
     }
   };
 
-  // A freshly deployed bot inserts a meetings row; nudge the monitor to refetch
+  // A freshly deployed bot or scheduled meeting nudges monitors to refetch
   const handleBotDeployed = () => {
     setMeetingsRefreshKey((key) => key + 1);
+    fetchCalendarData();
   };
 
   // While auth status is loading, show clean light mode loading screen
@@ -268,27 +232,15 @@ export default function AdminDashboard({ onNavigateHome }) {
             <div className="p-1 rounded-lg bg-white border border-slate-200 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
               <img src="/college-logo.png" alt="CHARUSAT Logo" className="h-6 w-auto object-contain" />
             </div>
-            <div className="h-4 w-[1px] bg-slate-200 shrink-0 hidden sm:block" />
-            <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white shrink-0 shadow-xs">
-              <Bot className="w-4 h-4" />
+            <div className="h-7 w-7 rounded-lg flex items-center justify-center shrink-0">
+              <img src="/revora-icon.png" alt="Revora" className="h-7 w-7 object-contain shrink-0" />
             </div>
             <span>Admin Control Center</span>
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-200/80 uppercase">
-              Supabase Auth &amp; DB
-            </span>
           </div>
         </div>
 
-        {/* Schedule Button & Admin Session Badge */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="px-3.5 py-2 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs hover:scale-105 cursor-pointer"
-          >
-            <PlusCircle className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Schedule Meeting</span>
-          </button>
-
+        {/* Admin Session Badge */}
+        <div className="flex items-center gap-4">
           <div className="flex items-center gap-3 px-3.5 py-1.5 rounded-xl bg-slate-100/90 border border-slate-200/80">
             {user?.avatar ? (
               <img
@@ -320,82 +272,64 @@ export default function AdminDashboard({ onNavigateHome }) {
       {/* Main Container */}
       <main className="max-w-[1280px] mx-auto px-6 py-8 space-y-8">
         
-        {/* Page Heading / Intro */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h1 className="font-outfit font-black text-2xl sm:text-3xl text-slate-900 tracking-tight">
-              Admin Dashboard
-            </h1>
-            <p className="text-sm text-slate-500 mt-1">
-              Manage meetings, AI bot deployments, intelligence pipelines, and user directory.
-            </p>
-          </div>
-          <div className="flex items-center gap-2 text-xs font-mono font-semibold text-slate-600 bg-white border border-slate-200/80 px-3.5 py-2 rounded-xl shadow-2xs w-fit">
-            <Activity className="w-3.5 h-3.5 text-emerald-500" />
-            <span>All Systems Operational</span>
-          </div>
+        {/* Page Heading */}
+        <div>
+          <h1 className="font-outfit font-black text-2xl text-slate-900 tracking-tight">
+            Admin Dashboard
+          </h1>
+          <p className="text-sm text-slate-500 mt-0.5">
+            Manage bot deployments, meetings, and user directory.
+          </p>
         </div>
 
-        {/* System Overview Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          {/* Card 1: Total Users */}
-          <div className="p-5 rounded-[22px] bg-white border border-slate-200/80 shadow-xs hover:shadow-sm transition-all flex flex-col justify-between">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-mono font-semibold mb-2">
-              <span>TOTAL USERS</span>
-              <div className="w-8 h-8 rounded-xl bg-sky-50 text-[#0084FF] flex items-center justify-center">
-                <Users className="w-4 h-4" />
-              </div>
+        {/* Key Statistics + System Status */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Primary: Total Users */}
+          <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex items-center gap-4">
+            <div className="w-10 h-10 rounded-xl bg-sky-50 text-[#0084FF] flex items-center justify-center shrink-0">
+              <Users className="w-5 h-5" />
             </div>
             <div>
-              <div className="font-outfit font-black text-3xl text-slate-900">{usersList.length}</div>
-              <div className="text-[12px] text-slate-500 mt-1 font-sans">{standardCount} standard, {adminCount} admin</div>
+              <div className="font-outfit font-black text-2xl text-slate-900 leading-none">{usersList.length}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Total Users</div>
             </div>
           </div>
 
-          {/* Card 2: Administrators */}
-          <div className="p-5 rounded-[22px] bg-white border border-slate-200/80 shadow-xs hover:shadow-sm transition-all flex flex-col justify-between">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-mono font-semibold mb-2">
-              <span>ADMINISTRATORS</span>
-              <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-                <ShieldCheck className="w-4 h-4" />
-              </div>
+          {/* Primary: Administrators */}
+          <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex items-center gap-4">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <div className="font-outfit font-black text-3xl text-amber-600">{adminCount}</div>
-              <div className="text-[12px] text-slate-500 mt-1 font-sans">Full administrative privileges</div>
+              <div className="font-outfit font-black text-2xl text-amber-600 leading-none">{adminCount}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Administrators</div>
             </div>
           </div>
 
-          {/* Card 3: Database Engine */}
-          <div className="p-5 rounded-[22px] bg-white border border-slate-200/80 shadow-xs hover:shadow-sm transition-all flex flex-col justify-between">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-mono font-semibold mb-2">
-              <span>DATABASE ENGINE</span>
-              <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                <Database className="w-4 h-4" />
-              </div>
+          {/* System: Database */}
+          <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+              <Database className="w-4 h-4" />
             </div>
             <div>
-              <div className="font-outfit font-bold text-xl text-slate-900">PostgreSQL</div>
-              <div className="text-[12px] text-emerald-600 font-medium mt-1 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-                <span>Supabase Realtime Active</span>
+              <div className="text-sm font-bold text-slate-900">PostgreSQL</div>
+              <div className="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                Realtime Active
               </div>
             </div>
           </div>
 
-          {/* Card 4: Session Security */}
-          <div className="p-5 rounded-[22px] bg-white border border-slate-200/80 shadow-xs hover:shadow-sm transition-all flex flex-col justify-between">
-            <div className="flex items-center justify-between text-slate-500 text-xs font-mono font-semibold mb-2">
-              <span>SESSION SECURITY</span>
-              <div className="w-8 h-8 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
-                <Lock className="w-4 h-4" />
-              </div>
+          {/* System: Auth */}
+          <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
+              <Lock className="w-4 h-4" />
             </div>
             <div>
-              <div className="font-outfit font-bold text-xl text-slate-900">Supabase Auth</div>
-              <div className="text-[12px] text-purple-600 font-medium mt-1 flex items-center gap-1.5">
-                <Shield className="w-3.5 h-3.5" />
-                <span>JWT 256-bit &amp; RLS</span>
+              <div className="text-sm font-bold text-slate-900">Revora Auth</div>
+              <div className="text-[10px] text-purple-600 font-medium flex items-center gap-1">
+                <Shield className="w-3 h-3" />
+                JWT & RLS
               </div>
             </div>
           </div>
@@ -410,42 +344,60 @@ export default function AdminDashboard({ onNavigateHome }) {
           </div>
         )}
 
-        {/* Meeting Scheduling & AI Bot Deployment (admin-only capability) */}
-        <MeetingBotDeployer onBotDeployed={handleBotDeployed} assignableUsers={usersList} />
-
-        {/* Interactive Meeting Calendar */}
-        <MeetingCalendar
-          meetings={meetingsList}
-          briefings={briefingsList}
-          onSelectMeeting={(m) => setSelectedMeeting(m)}
+        {/* Schedule Meeting & Auto-Dispatch (Admin Only) */}
+        <AdminMeetingScheduler
+          onMeetingScheduled={handleBotDeployed}
+          assignableUsers={usersList}
+          projects={projectsList}
+          currentUserId={user?.id || ''}
         />
 
-        {/* Meeting & Bot Monitor: status, transcripts, recordings, summaries */}
+        {/* Meeting Calendar (Synchronized across Admins & Users) */}
+        <MeetingCalendar
+          meetings={adminMeetingsList}
+          briefings={adminBriefingsList}
+          plannedMeetings={adminPlannedMeetingsList}
+          currentUser={user}
+        />
+
+        {/* Meeting Monitor */}
         <AdminMeetingsPanel refreshKey={meetingsRefreshKey} users={usersList} />
 
-        {/* User Management Table */}
-        <div className="p-6 sm:p-8 rounded-[28px] bg-white border border-slate-200/80 shadow-xs space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+        {/* Planned Meetings */}
+        <PlannedMeetingsPanel projects={projectsList} assignableUsers={usersList} currentUserId={user?.id || ''} />
+
+        {/* Client Organizations & Portals Manager */}
+        <AdminClientManager
+          onClientCreated={() => {
+            fetchProjects();
+            fetchUsers();
+          }}
+        />
+
+        {/* User Directory */}
+        <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
             <div>
-              <h3 className="font-outfit font-bold text-xl text-slate-900 flex items-center gap-2">
-                <Users className="w-5 h-5 text-[#0084FF]" />
-                User Directory &amp; Role Manager
+              <h3 className="font-outfit font-bold text-base text-slate-900 flex items-center gap-2">
+                <Users className="w-4 h-4 text-[#0084FF]" />
+                User Directory
               </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Manage registered user credentials, switch roles between 'user' and 'admin', or revoke access.
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Manage roles and access for registered users.
               </p>
             </div>
 
             <button
-              onClick={() => { fetchUsers(); fetchMeetings(); fetchBriefings(); }}
+              onClick={fetchUsers}
               disabled={loadingUsers}
-              className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-bold text-xs flex items-center gap-2 transition-colors cursor-pointer w-fit"
+              className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200/80 text-slate-500 transition-colors cursor-pointer w-fit"
+              title="Refresh user list"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingUsers ? 'animate-spin text-[#0084FF]' : ''}`} />
-              <span>Refresh Users</span>
             </button>
           </div>
 
+          {/* Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-sans">
               <thead>
@@ -502,7 +454,7 @@ export default function AdminDashboard({ onNavigateHome }) {
                         {u.role === 'admin' ? 'Demote to User' : 'Promote to Admin'}
                       </button>
 
-                      {u.id !== user?.id && (
+                      {u.id !== user.id && (
                         <button
                           onClick={() => handleDeleteUser(u.id)}
                           className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200/60 cursor-pointer transition-colors inline-flex items-center justify-center align-middle"
@@ -518,181 +470,6 @@ export default function AdminDashboard({ onNavigateHome }) {
             </table>
           </div>
         </div>
-
-        {/* Schedule Meeting Modal (Clean White Theme) */}
-        {isCreateModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-            <div className="bg-white rounded-[28px] max-w-[560px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[90vh] overflow-y-auto text-black">
-              <div className="flex items-center justify-between pb-3 border-b border-black/5">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-sky-100 text-[#0084FF] flex items-center justify-center">
-                    <PlusCircle className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-outfit font-bold text-lg text-black">Schedule New Meeting</h3>
-                    <p className="text-xs text-black/50">Auto-generate and email an AI briefing to attendees</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="p-1.5 rounded-xl hover:bg-black/5 text-black/60 hover:text-black transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <form onSubmit={handleCreateMeeting} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1">
-                    Meeting Title <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Q4 Strategy Sync & Product Architecture"
-                    value={meetingTitle}
-                    onChange={(e) => setMeetingTitle(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black placeholder:text-black/40"
-                  />
-                </div>
-
-                {/* Attendee Directory Multi-Select Picker */}
-                <div>
-                  <AttendeePicker
-                    selectedEmails={recipientEmail}
-                    onChange={(emails) => setRecipientEmail(emails)}
-                    isDark={false}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-[#0084FF]" />
-                    <span>Scheduled Date & Time <span className="text-red-500">*</span></span>
-                  </label>
-                  <input
-                    type="datetime-local"
-                    required
-                    value={scheduledAt}
-                    onChange={(e) => setScheduledAt(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
-                    <AlignLeft className="w-3.5 h-3.5 text-[#0084FF]" />
-                    <span>Meeting Context & Agenda (Optional)</span>
-                  </label>
-                  <textarea
-                    rows={3}
-                    placeholder="Briefly outline topics to cover, goals, or prerequisites for the Gemini AI brief..."
-                    value={meetingDetails}
-                    onChange={(e) => setMeetingDetails(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black placeholder:text-black/40 resize-none"
-                  />
-                </div>
-
-                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-black/5">
-                  <button
-                    type="button"
-                    onClick={() => setIsCreateModalOpen(false)}
-                    className="px-4 py-2.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={creatingMeeting}
-                    className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs shadow-md transition-all hover:scale-102 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  >
-                    {creatingMeeting ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Dispatching AI Brief...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-3.5 h-3.5" />
-                        <span>Schedule & Auto-Dispatch</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Selected Meeting Details Modal */}
-        {selectedMeeting && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-            <div className="bg-white rounded-[28px] max-w-[640px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[85vh] overflow-y-auto">
-              <div className="flex items-center justify-between pb-4 border-b border-black/5">
-                <div>
-                  <h3 className="font-outfit font-bold text-xl text-black">
-                    {selectedMeeting.title || 'Meeting Summary & AI Insights'}
-                  </h3>
-                  <p className="text-xs text-black/50 font-mono mt-0.5">
-                    {selectedMeeting.bot_id ? `Bot ID: ${selectedMeeting.bot_id} • ` : ''}
-                    {selectedMeeting.meeting_url || selectedMeeting.recipient_email || 'Event Details'}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setSelectedMeeting(null)}
-                  className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
-
-              {selectedMeeting.summary && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Executive Summary</h4>
-                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
-                    {selectedMeeting.summary}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.agenda && !selectedMeeting.summary && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Meeting Agenda</h4>
-                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
-                    {selectedMeeting.agenda}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.transcript && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
-                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[200px] overflow-y-auto">
-                    {selectedMeeting.transcript}
-                  </div>
-                </div>
-              )}
-
-              {Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Assigned Action Items</h4>
-                  <div className="space-y-2">
-                    {selectedMeeting.action_items.map((item, idx) => (
-                      <div key={idx} className="p-3 rounded-xl bg-purple-50 border border-purple-100 text-xs text-purple-900 font-medium flex items-center justify-between">
-                        <span>{typeof item === 'string' ? item : item.task || JSON.stringify(item)}</span>
-                        {item.assignee && (
-                          <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-700 font-bold text-[10px]">
-                            {item.assignee}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
       </main>
     </div>

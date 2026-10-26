@@ -23,8 +23,8 @@ export function AuthProvider({ children }) {
     }
   };
 
-  // Helper to fetch user profile from Supabase profiles table
-  const fetchUserProfile = async (authUser) => {
+  // Helper to fetch user profile strictly from Supabase profiles table
+  const fetchUserProfile = async (authUser, retry = true) => {
     if (!authUser) return null;
 
     try {
@@ -32,29 +32,55 @@ export function AuthProvider({ children }) {
         .from('profiles')
         .select('*')
         .eq('id', authUser.id)
-        .single();
+        .maybeSingle();
 
       if (profile && !profileError) {
+        let clientInfo = null;
+        if (profile.client_id) {
+          try {
+            const { data: cData } = await supabase
+              .from('clients')
+              .select('id, name, email, company, contact_name')
+              .eq('id', profile.client_id)
+              .maybeSingle();
+            if (cData) clientInfo = cData;
+          } catch (cErr) {
+            console.warn('Failed to load client details:', cErr);
+          }
+        }
+
         return {
           id: authUser.id,
           email: authUser.email,
-          name: profile.full_name || authUser.user_metadata?.full_name || authUser.user_metadata?.name || 'User',
+          name: profile.full_name || authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email?.split('@')[0] || 'User',
           avatar: profile.avatar_url || authUser.user_metadata?.avatar_url || null,
-          role: profile.role === 'admin' ? 'admin' : 'user',
+          role: profile.role === 'admin' ? 'admin' : (profile.role === 'client' || profile.client_id ? 'client' : 'user'),
+          clientId: profile.client_id || null,
+          clientName: clientInfo?.name || null,
+          clientCompany: clientInfo?.company || null,
+          client: clientInfo,
           createdAt: profile.created_at || authUser.created_at,
         };
       }
+
+      // If profile not yet created (e.g. brand new OAuth signup trigger running), retry once
+      if (retry) {
+        await new Promise((res) => setTimeout(res, 600));
+        return await fetchUserProfile(authUser, false);
+      }
     } catch (err) {
-      console.warn('Profiles table query fallback:', err);
+      console.warn('Profiles table query error:', err);
     }
 
-    const fallbackRole = authUser.email?.toLowerCase() === 'admin@revora.ai' ? 'admin' : 'user';
+    // Fail-closed fallback: ordinary user role only. NEVER grant admin privileges on client fallback.
     return {
       id: authUser.id,
       email: authUser.email,
       name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || authUser.email?.split('@')[0] || 'User',
       avatar: authUser.user_metadata?.avatar_url || null,
-      role: fallbackRole,
+      role: 'user',
+      clientId: null,
+      clientName: null,
       createdAt: authUser.created_at,
     };
   };
@@ -70,22 +96,26 @@ export function AuthProvider({ children }) {
           setSession(initialSession);
           if (initialSession?.user) {
             const userProfile = await fetchUserProfile(initialSession.user);
+            const intent = sessionStorage.getItem('revora_auth_intent');
+            if (intent === 'admin' && userProfile?.role !== 'admin') {
+              sessionStorage.removeItem('revora_auth_intent');
+              await supabase.auth.signOut();
+              persistUser(null);
+              setError(`Access denied: Account (${userProfile?.email || 'user'}) does not have administrator privileges.`);
+              setLoading(false);
+              return;
+            }
+            if (intent) sessionStorage.removeItem('revora_auth_intent');
             persistUser(userProfile);
           } else {
-            const savedDemo = localStorage.getItem('revora_demo_user');
-            if (savedDemo) {
-              try {
-                persistUser(JSON.parse(savedDemo));
-              } catch (_) {
-                persistUser(null);
-              }
-            }
+            persistUser(null);
           }
           setLoading(false);
         }
       } catch (err) {
         console.error('Error initializing Supabase session:', err);
         if (mounted) {
+          persistUser(null);
           setLoading(false);
         }
       }
@@ -97,6 +127,16 @@ export function AuthProvider({ children }) {
       setSession(currentSession);
       if (currentSession?.user) {
         const userProfile = await fetchUserProfile(currentSession.user);
+        const intent = sessionStorage.getItem('revora_auth_intent');
+        if (intent === 'admin' && userProfile?.role !== 'admin') {
+          sessionStorage.removeItem('revora_auth_intent');
+          await supabase.auth.signOut();
+          persistUser(null);
+          setError(`Access denied: Account (${userProfile?.email || 'user'}) does not have administrator privileges.`);
+          setLoading(false);
+          return;
+        }
+        if (intent) sessionStorage.removeItem('revora_auth_intent');
         persistUser(userProfile);
       } else if (event === 'SIGNED_OUT') {
         persistUser(null);
@@ -110,53 +150,20 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  // Quick Demo User Login
-  const loginDemoUser = async () => {
-    setError(null);
-    const demoUserObj = {
-      id: 'demo_user_123',
-      email: 'alex.user@revora.ai',
-      name: 'Alex Rivera',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&crop=face',
-      role: 'user',
-      createdAt: new Date().toISOString(),
-    };
-    persistUser(demoUserObj);
-    try {
-      localStorage.setItem('revora_demo_user', JSON.stringify(demoUserObj));
-    } catch (_) {}
-    return { success: true, user: demoUserObj };
-  };
-
-  // Quick Demo Admin Login
-  const loginDemoAdmin = async () => {
-    setError(null);
-    const demoAdminObj = {
-      id: 'demo_admin_001',
-      email: 'admin@revora.ai',
-      name: 'System Admin',
-      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=80&h=80&fit=crop&crop=face',
-      role: 'admin',
-      createdAt: new Date().toISOString(),
-    };
-    try {
-      localStorage.setItem('revora_demo_user', JSON.stringify(demoAdminObj));
-    } catch (_) {}
-    persistUser(demoAdminObj);
-    return { success: true, user: demoAdminObj };
-  };
-
-  // Google OAuth Sign In
-  const loginGoogle = async () => {
+  // Google OAuth Sign In (shared identity mechanism for Standard Users and Admins)
+  const loginGoogle = async (intendedRole = 'user') => {
     setError(null);
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const isConfigured = supabaseUrl && !supabaseUrl.includes('placeholder-project-id');
 
     if (!isConfigured) {
-      return await loginDemoUser();
+      const msg = 'Authentication service is temporarily unavailable. Please try again later.';
+      setError(msg);
+      return { success: false, message: msg };
     }
 
     try {
+      sessionStorage.setItem('revora_auth_intent', intendedRole);
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
@@ -165,73 +172,42 @@ export function AuthProvider({ children }) {
       });
 
       if (oauthError) throw oauthError;
-      return data;
+      return { success: true, data };
     } catch (err) {
-      console.warn('Supabase Google OAuth fallback active:', err.message);
-      return await loginDemoUser();
+      sessionStorage.removeItem('revora_auth_intent');
+      console.error('Supabase Google OAuth error:', err);
+      const msg = err.message || 'Google sign-in failed. Please try again.';
+      setError(msg);
+      return { success: false, message: msg };
     }
   };
 
-  // Admin Email/Password Sign In
-  const loginAdmin = async (email, password) => {
+  // Admin Google Sign In
+  const loginAdmin = async () => {
+    return await loginGoogle('admin');
+  };
+
+  // Email/Password sign in for Clients and Users
+  const loginPassword = async (email, password) => {
     setError(null);
-    const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanPassword = password || 'admin123';
-
-    // Local admin login check fallback
-    if (cleanEmail === 'admin@revora.ai' && (password === 'admin123' || password === 'admin')) {
-      return await loginDemoAdmin();
-    }
-
-    const finishAdminLogin = async (authUser) => {
-      const userProfile = await fetchUserProfile(authUser);
-      if (userProfile?.role !== 'admin' && cleanEmail !== 'admin@revora.ai') {
-        await supabase.auth.signOut();
-        const msg = 'Access denied: this account does not have the admin role.';
-        setError(msg);
-        return { success: false, message: msg };
-      }
-      persistUser(userProfile);
-      return { success: true, user: userProfile };
-    };
-
-    if (cleanEmail === 'admin@revora.ai' || cleanEmail.startsWith('admin@')) {
-      try {
-        const { data, error: signInError } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password: cleanPassword,
-        });
-
-        if (!signInError && data?.user) {
-          return await finishAdminLogin(data.user);
-        }
-      } catch (_) {}
-
-      return await loginDemoAdmin();
-    }
-
     try {
+      const cleanEmail = email.trim().toLowerCase();
       const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
-        password: cleanPassword,
+        password,
       });
 
-      if (!signInError && data?.user) {
-        return await finishAdminLogin(data.user);
-      }
+      if (signInError) throw signInError;
 
-      if (cleanEmail.includes('admin')) {
-        return await loginDemoAdmin();
+      if (data?.user) {
+        const userProfile = await fetchUserProfile(data.user);
+        persistUser(userProfile);
+        return { success: true, user: userProfile, session: data.session };
       }
-
-      const msg = signInError?.message || 'Admin authentication failed.';
-      setError(msg);
-      return { success: false, message: msg };
+      return { success: true, data };
     } catch (err) {
-      if (cleanEmail.includes('admin')) {
-        return await loginDemoAdmin();
-      }
-      const msg = err.message || 'Authentication error';
+      console.error('Password sign in error:', err);
+      const msg = err.message || 'Invalid email or password.';
       setError(msg);
       return { success: false, message: msg };
     }
@@ -240,14 +216,15 @@ export function AuthProvider({ children }) {
   // Sign Out
   const logout = async () => {
     try {
-      try { localStorage.removeItem('revora_demo_user'); } catch (_) {}
+      sessionStorage.removeItem('revora_auth_intent');
+      localStorage.removeItem('revora_user');
+      localStorage.removeItem('revora_current_view');
       await supabase.auth.signOut();
     } catch (err) {
-      console.warn('Sign out error:', err);
+      console.warn('Sign out notice:', err);
     } finally {
       persistUser(null);
       setSession(null);
-      localStorage.removeItem('revora_current_view');
     }
   };
 
@@ -261,8 +238,7 @@ export function AuthProvider({ children }) {
         setError,
         loginGoogle,
         loginAdmin,
-        loginDemoAdmin,
-        loginDemoUser,
+        loginPassword,
         logout,
         fetchUserProfile,
       }}

@@ -1,27 +1,27 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, User, FileText, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const formatBriefingData = (raw) => {
   if (!raw) return null;
-  const title = raw.title || raw.meeting_title || 'Upcoming Scheduled Meeting';
+  const title = raw.title || raw.meeting_title || 'Scheduled Meeting';
   return {
     title,
-    recipientEmail: raw.recipientEmail || raw.attendees || raw.recipient_email || 'All Attendees',
+    recipientEmail: raw.recipientEmail || raw.attendees || raw.recipient_email || '',
     status: raw.status || 'Ready',
     summaryContext:
       raw.summaryContext ||
       raw.summary ||
       raw.agenda ||
       raw.context ||
-      `Automated pre-meeting intelligence briefing generated for "${title}". Objectives focused on deliverable sync and architecture review.`,
+      '',
     keyTopics:
       Array.isArray(raw.keyTopics) && raw.keyTopics.length > 0
         ? raw.keyTopics
         : Array.isArray(raw.action_items) && raw.action_items.length > 0
         ? raw.action_items
-        : ['Architecture & Performance Review', 'API Endpoint Alignment', 'Task Assignments'],
+        : [],
   };
 };
 
@@ -81,9 +81,9 @@ const BriefingCard = ({ briefing: initialBriefing }) => {
 
   if (error || !briefing) {
     return (
-      <div className="p-6 rounded-[24px] bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium flex items-center gap-2">
-        <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
-        <span>No active pre-meeting briefings found. Schedule a meeting to generate AI briefings.</span>
+      <div className="p-6 rounded-[24px] bg-neutral-50 border border-black/10 text-neutral-600 text-xs font-medium flex items-center gap-2">
+        <AlertCircle className="w-4 h-4 shrink-0 text-[#0084FF]" />
+        <span>No meetings yet</span>
       </div>
     );
   }
@@ -104,9 +104,9 @@ const BriefingCard = ({ briefing: initialBriefing }) => {
           </div>
         </div>
 
-        <span className="px-3 py-1 rounded-full text-xs font-bold border border-emerald-200 bg-emerald-50 text-emerald-700 flex items-center gap-1">
+        <span className="px-3 py-1 rounded-full text-xs font-bold bg-sky-50 text-[#0084FF] border border-sky-100 flex items-center gap-1 capitalize">
           <CheckCircle2 className="w-3.5 h-3.5" />
-          {briefing.status}
+          Status: {briefing.status}
         </span>
       </div>
 
@@ -122,7 +122,7 @@ const BriefingCard = ({ briefing: initialBriefing }) => {
         {briefing.keyTopics && briefing.keyTopics.length > 0 && (
           <div>
             <h4 className="text-xs font-bold text-black uppercase tracking-wider mb-2">
-              Key Topics & Context
+              Key Topics & Action Items
             </h4>
             <div className="flex flex-wrap gap-2">
               {briefing.keyTopics.map((topic, index) => (

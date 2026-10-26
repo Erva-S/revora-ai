@@ -1,24 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../supabaseClient';
 import BriefingCard from '../components/BriefingCard';
-import MeetingBotDeployer from '../components/MeetingBotDeployer';
+import ContextBriefingSection from '../components/ContextBriefingSection';
+import MeetingRecordingLink from '../components/MeetingRecordingLink';
 import TaskExtractorModal from '../components/TaskExtractorModal';
 import AttendeePicker from '../components/AttendeePicker';
 import MeetingCalendar from '../components/MeetingCalendar';
+import MeetingDetailsModal from '../components/MeetingDetailsModal';
 import ActionItemCard, { readActionItem } from '../components/ActionItemCard';
 import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
+import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
+import { applyMeetingChange, mergeMeetingRows, subscribeToMeetingChanges } from '../lib/meetingRealtime';
 import { 
-  Bot, LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
+  LogOut, Mic, FileText, CheckSquare, Sparkles, ArrowLeft, 
   RefreshCw, Clock, PlusCircle, Calendar, AlignLeft, X, 
-  Layers, Search, AlertCircle, Video, ExternalLink,
-  LayoutDashboard, Settings, User as UserIcon,
-  Key, LogIn
+  Layers, Search, AlertCircle, Key, Video,
+  LayoutDashboard, Settings, User as UserIcon, LogIn, Building2
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultTab }) {
   const { user, logout } = useAuth();
@@ -28,9 +31,14 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
   const [micActive, setMicActive] = useState(false);
   const [meetingsList, setMeetingsList] = useState([]);
+  const [plannedMeetingsList, setPlannedMeetingsList] = useState([]);
+  const [loadingPlannedMeetings, setLoadingPlannedMeetings] = useState(true);
+  const [plannedMeetingsError, setPlannedMeetingsError] = useState('');
   const [briefingsList, setBriefingsList] = useState([]);
   const [loadingMeetings, setLoadingMeetings] = useState(true);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
+  const [meetingAccessDenied, setMeetingAccessDenied] = useState(false);
+  const [linkedPlannedMeeting, setLinkedPlannedMeeting] = useState(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
   // Meeting Creation State
@@ -41,27 +49,26 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     recipientEmail: '',
     agenda: '',
     scheduledAt: '',
+    meetingUrl: '',
   });
 
   // Archive Modal State
   const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
   const [archiveSearch, setArchiveSearch] = useState('');
+  const meetingRequestVersion = useRef(0);
+  const meetingRefreshTimer = useRef(null);
 
-  // Fetch AI Briefings from backend
-  const fetchBriefings = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/briefings`);
-      if (res.ok) {
-        const data = await res.json();
-        const list = Array.isArray(data) ? data : (data.briefings || []);
-        setBriefingsList(list);
-      }
-    } catch (err) {
-      console.warn('Briefings query notice:', err);
-    }
-  };
+  useEffect(() => {
+    let cancelled = false;
+    setLinkedPlannedMeeting(null);
+    if (!selectedMeeting?.id) return () => { cancelled = true; };
+    supabase.from('planned_meetings').select('*').eq('linked_meeting_id', selectedMeeting.id).maybeSingle()
+      .then(({ data, error: lookupError }) => {
+        if (!cancelled && !lookupError) setLinkedPlannedMeeting(data || null);
+      });
+    return () => { cancelled = true; };
+  }, [selectedMeeting?.id]);
 
-  // Fetch meetings from Supabase
   // Derive active tab from location pathname or defaultTab prop
   const currentPath = location.pathname;
   let activeTab = 'overview';
@@ -73,57 +80,135 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     activeTab = 'profile';
   }
 
-  // Fetch real meetings from Supabase Postgres database
-  const fetchMeetings = async () => {
+  // Fetch AI Briefings from backend authorized for user
+  const fetchBriefings = async () => {
     try {
-      setLoadingMeetings(true);
+      if (!user?.email && !user?.id) {
+        setBriefingsList([]);
+        return;
+      }
+      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
+        headers: {
+          'x-user-email': user?.email || '',
+          'x-user-id': user?.id || '',
+          'x-user-role': user?.role || 'user',
+          'x-client-id': user?.clientId || user?.client_id || '',
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.briefings || []);
+        setBriefingsList(list);
+      }
+    } catch (err) {
+      console.warn('Briefings query notice:', err);
+    }
+  };
+
+  // Fetch real meetings from Supabase Postgres database
+  const fetchMeetings = async ({ silent = false } = {}) => {
+    const requestId = ++meetingRequestVersion.current;
+    try {
+      if (!silent) setLoadingMeetings(true);
       const { data, error } = await supabase
         .from('meetings')
         .select('*')
         .order('created_at', { ascending: false });
 
       if (!error && data) {
-        setMeetingsList(data);
+        if (requestId < meetingRequestVersion.current) return;
+        setMeetingsList((current) => mergeMeetingRows(current, data));
         // If route has meeting id, find and select it
         if (routeMeetingId) {
           const match = data.find(
             (m) => String(m.id) === String(routeMeetingId) || m.bot_id === routeMeetingId
           );
           if (match) {
-            setSelectedMeeting(match);
+            setSelectedMeeting((current) => mergeMeetingRows(current ? [current] : [], [match])[0] || match);
+            setMeetingAccessDenied(false);
+          } else {
+            setSelectedMeeting(null);
+            setMeetingAccessDenied(true);
           }
+        }
+      } else {
+        if (routeMeetingId) {
+          setSelectedMeeting(null);
+          setMeetingAccessDenied(true);
         }
       }
     } catch (err) {
       console.warn('Meetings query notice:', err);
     } finally {
-      setLoadingMeetings(false);
+      if (!silent) setLoadingMeetings(false);
+    }
+  };
+
+  // RLS limits this read to planned meetings assigned to the signed-in user.
+  // The legacy schedule flow above remains unchanged.
+  const fetchPlannedMeetings = async () => {
+    try {
+      setLoadingPlannedMeetings(true);
+      const { data, error } = await supabase
+        .from('planned_meetings')
+        .select('*')
+        .eq('status', 'planned')
+        .gte('scheduled_for', new Date().toISOString())
+        .order('scheduled_for', { ascending: true })
+        .limit(8);
+      if (error) throw error;
+      setPlannedMeetingsList(data || []);
+      setPlannedMeetingsError('');
+    } catch (err) {
+      console.warn('Planned meetings query notice:', err);
+      setPlannedMeetingsList([]);
+      setPlannedMeetingsError(err.message || 'Upcoming planned meetings are unavailable.');
+    } finally {
+      setLoadingPlannedMeetings(false);
     }
   };
 
   useEffect(() => {
     fetchMeetings();
     fetchBriefings();
+    fetchPlannedMeetings();
 
-    let channel = null;
-    try {
-      channel = supabase
-        .channel('meetings_realtime_feed')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, () => {
-          fetchMeetings();
-          fetchBriefings();
-        })
-        .subscribe();
-    } catch (realtimeErr) {
-      console.warn('Realtime subscription notice:', realtimeErr);
-    }
+    const scheduleRefresh = () => {
+      if (meetingRefreshTimer.current) clearTimeout(meetingRefreshTimer.current);
+      meetingRefreshTimer.current = setTimeout(() => { fetchMeetings({ silent: true }); }, 250);
+    };
+    const unsubscribe = subscribeToMeetingChanges('meetings_realtime_feed', {
+      onChange: (payload) => {
+        setMeetingsList((current) => applyMeetingChange(current, payload));
+        if (payload?.new?.id) {
+          setSelectedMeeting((current) => {
+            if (!current || current.id !== payload.new.id) return current;
+            return mergeMeetingRows([current], [payload.new])[0] || current;
+          });
+        }
+        scheduleRefresh();
+      },
+      onStatus: (status, realtimeErr) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Realtime subscription notice:', realtimeErr?.message || status);
+          fetchMeetings({ silent: true });
+        }
+      },
+    });
+
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') fetchMeetings({ silent: true });
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    const pollId = setInterval(() => fetchMeetings({ silent: true }), 5000);
 
     return () => {
-      if (channel) {
-        try {
-          supabase.removeChannel(channel);
-        } catch (_) {}
-      }
+      unsubscribe();
+      clearInterval(pollId);
+      if (meetingRefreshTimer.current) clearTimeout(meetingRefreshTimer.current);
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
     };
   }, [routeMeetingId]);
 
@@ -143,19 +228,28 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
       const res = await fetch(`${API_BASE_URL}/api/briefings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': user?.email || '',
+          'x-user-id': user?.id || '',
+          'x-user-role': user?.role || 'user',
+        },
         body: JSON.stringify({
           title: meetingFormData.title,
           recipientEmail: meetingFormData.recipientEmail || user?.email,
           agenda: meetingFormData.agenda,
           scheduledAt: meetingFormData.scheduledAt,
+          creatorEmail: user?.email,
+          creatorUserId: user?.id,
+          meetingUrl: meetingFormData.meetingUrl?.trim() || null,
+          meeting_url: meetingFormData.meetingUrl?.trim() || null,
         }),
       });
 
       if (!res.ok) throw new Error('Failed to schedule meeting briefing');
 
       confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
-      setMeetingFormData({ title: '', recipientEmail: '', agenda: '', scheduledAt: '' });
+      setMeetingFormData({ title: '', recipientEmail: '', agenda: '', scheduledAt: '', meetingUrl: '' });
       setIsCreateModalOpen(false);
 
       await fetchBriefings();
@@ -172,6 +266,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     (b.title || '').toLowerCase().includes(archiveSearch.toLowerCase()) ||
     (b.agenda || '').toLowerCase().includes(archiveSearch.toLowerCase())
   );
+
   const handleSignOut = async () => {
     await logout();
     navigate('/', { replace: true });
@@ -184,11 +279,13 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
   const handleOpenMeeting = (meeting) => {
     setSelectedMeeting(meeting);
+    setMeetingAccessDenied(false);
     navigate(`/meetings/${meeting.id}`);
   };
 
   const handleCloseMeetingModal = () => {
     setSelectedMeeting(null);
+    setMeetingAccessDenied(false);
     if (routeMeetingId) {
       navigate('/meetings');
     }
@@ -204,7 +301,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 font-sans">
-      {/* Top Navigation Bar with Single Primary Action Button */}
+      {/* Top Navigation Bar with Primary Action Buttons */}
       <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-black/5 px-6 py-3.5 flex items-center justify-between shadow-xs">
         <div className="flex items-center gap-4">
           <button
@@ -219,26 +316,34 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
               <img src="/college-logo.png" alt="CHARUSAT Logo" className="h-6 w-auto object-contain" />
             </div>
-            <div className="h-4 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
-            <div className="w-7 h-7 rounded-lg bg-[#0084FF] flex items-center justify-center text-white shrink-0">
-              <Bot className="w-4 h-4" />
+            <div className="h-7 w-7 rounded-lg flex items-center justify-center shrink-0">
+              <img src="/revora-icon.png" alt="Revora" className="h-7 w-7 object-contain shrink-0" />
             </div>
             <span>Revora Dashboard</span>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-[#0084FF] uppercase">
-              User Portal
-            </span>
+            {user?.clientName ? (
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-700 border border-purple-200 uppercase flex items-center gap-1">
+                <Building2 className="w-3 h-3" />
+                Client: {user.clientName}
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-[#0084FF] uppercase">
+                User Portal
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Primary Schedule Button, User Badge & Logout */}
+        {/* Primary Schedule Button & User Profile Badge */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="px-3.5 py-2 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs hover:scale-105 cursor-pointer"
-          >
-            <PlusCircle className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Schedule Meeting</span>
-          </button>
+          {user?.role === 'admin' && (
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="px-3.5 py-2 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs hover:scale-105 cursor-pointer"
+            >
+              <PlusCircle className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Schedule Meeting</span>
+            </button>
+          )}
 
           {user ? (
             <button
@@ -259,7 +364,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               )}
               <div className="hidden sm:flex flex-col text-left leading-tight">
                 <span className="font-bold text-xs text-black">{user?.name || 'Standard User'}</span>
-                <span className="text-[10px] text-black/50">{user?.email}</span>
+                <span className="text-[10px] text-black/50">
+                  {user?.clientName ? `Client: ${user.clientName}` : user?.email}
+                </span>
               </div>
             </button>
           ) : (
@@ -342,13 +449,15 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <div className="p-8 rounded-[28px] bg-gradient-to-br from-[#0084FF] to-[#0066CC] text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">
               <div className="relative z-10 max-w-[600px]">
                 <span className="px-3 py-1 rounded-full bg-white/20 text-xs font-bold uppercase tracking-wider">
-                  Authenticated Session • Role: {user?.role || 'user'}
+                  {user?.clientName ? `Client Organization: ${user.clientName} • Client Portal` : `Authenticated Session • Role: ${user?.role || 'user'}`}
                 </span>
                 <h1 className="font-outfit font-black text-[30px] sm:text-[36px] leading-tight mt-3">
                   Welcome back, {user?.name || 'User'}!
                 </h1>
                 <p className="font-sans text-sm text-white/80 mt-2 leading-relaxed">
-                  Your Revora AI assistant is active and ready to schedule meetings, transcribe live calls, and extract action items.
+                  {user?.clientName
+                    ? `Accessing your dedicated client workspace for ${user.clientName}. View your project meetings, recordings, AI briefings, and transcripts with secure data isolation.`
+                    : 'Your Revora AI assistant is active and ready to schedule meetings, transcribe live calls, and extract action items.'}
                 </p>
               </div>
 
@@ -356,25 +465,53 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               <div className="relative z-10 flex items-center gap-3">
                 <button
                   onClick={handleLaunchAssistant}
-                  className="px-6 py-3 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer flex items-center gap-2"
+                  className="px-6 py-3.5 rounded-2xl bg-white text-[#0084FF] font-bold text-sm hover:bg-sky-50 transition-all hover:scale-105 shadow-lg cursor-pointer shrink-0 flex items-center gap-2"
                 >
                   <Sparkles className="w-4 h-4 text-[#0084FF]" />
-                  <span>Launch Assistant</span>
+                  <span>Launch Revora Assistant</span>
                 </button>
               </div>
 
               <div className="absolute -right-12 -bottom-12 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
             </div>
 
-            {/* Meeting Bot Deployer Component */}
-            <MeetingBotDeployer />
-
             {/* Interactive Meeting Calendar */}
             <MeetingCalendar
               meetings={meetingsList}
               briefings={briefingsList}
+              plannedMeetings={plannedMeetingsList}
               onSelectMeeting={(m) => setSelectedMeeting(m)}
+              currentUser={user}
             />
+
+            {/* Read-only planned meetings feed. Visibility is enforced by the planned_meetings RLS policy. */}
+            <section className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-outfit font-bold text-lg text-black">Upcoming Planned Meetings</h3>
+                  <p className="text-xs text-black/50">Briefings prepared for meetings shared with you.</p>
+                </div>
+                {plannedMeetingsList.length > 0 && <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 text-[#0084FF]">
+                  {plannedMeetingsList.length} upcoming
+                </span>}
+              </div>
+              {plannedMeetingsError && <p className="text-xs text-black/50">Upcoming planned meetings are unavailable until the planned-meetings migration is installed.</p>}
+              {!plannedMeetingsError && loadingPlannedMeetings && <p role="status" className="text-xs text-black/50">Loading upcoming planned meetings…</p>}
+              {!plannedMeetingsError && !loadingPlannedMeetings && plannedMeetingsList.length === 0 && <div className="p-5 rounded-2xl bg-white border border-black/10 text-center text-xs text-black/50">
+                No upcoming planned meetings have been shared with you.
+              </div>}
+              {!plannedMeetingsError && plannedMeetingsList.map((plannedMeeting) => <div key={plannedMeeting.id} className="p-4 rounded-2xl bg-white border border-black/10 shadow-xs space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h4 className="font-bold text-sm text-black">{plannedMeeting.title || 'Planned meeting'}</h4>
+                    <p className="text-xs text-black/50 font-mono">{new Date(plannedMeeting.scheduled_for).toLocaleString()}</p>
+                  </div>
+                   <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase bg-sky-50 text-[#0084FF] border border-sky-100">Planned</span>
+                </div>
+                {plannedMeeting.agenda && <p className="text-xs text-black/70 leading-relaxed">{plannedMeeting.agenda}</p>}
+                <ContextBriefingSection key={`${plannedMeeting.id}:${plannedMeeting.updated_at || ''}`} plannedMeeting={plannedMeeting} />
+              </div>)}
+            </section>
 
             {/* Live Pre-Meeting Briefing Feed with Archive Button */}
             <section className="space-y-4">
@@ -404,9 +541,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               ) : (
                 <div className="p-6 rounded-2xl bg-white border border-black/10 text-center space-y-2">
                   <Sparkles className="w-6 h-6 text-[#0084FF] mx-auto animate-pulse" />
-                  <h4 className="font-bold text-sm text-black">No Pre-Meeting Briefings Scheduled Yet</h4>
+                  <h4 className="font-bold text-sm text-black">No meetings yet</h4>
                   <p className="text-xs text-black/50 max-w-[420px] mx-auto">
-                    Use the Schedule Meeting button in the top header to automatically generate and email an AI briefing to attendees.
+                    Pre-meeting briefings for meetings you are scheduled to attend will appear here.
                   </p>
                 </div>
               )}
@@ -482,7 +619,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
             <div className="flex items-center justify-between pb-4 border-b border-black/5">
               <div>
                 <h3 className="font-outfit font-bold text-lg text-black">Live Meeting Summaries & Transcripts</h3>
-                <p className="text-xs text-black/50">Real-time feed connected to Supabase & MeetingBaaS</p>
+                <p className="text-xs text-black/50">Real-time feed connected to Revora AI & MeetingBaaS</p>
               </div>
 
               <div className="flex items-center gap-2">
@@ -568,10 +705,9 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
               ) : (
                 <div className="p-6 rounded-2xl bg-neutral-50 text-center space-y-2">
                   <Clock className="w-8 h-8 text-[#0084FF] mx-auto animate-pulse" />
-                  <h4 className="font-outfit font-bold text-base text-black">No Meetings Shared With You Yet</h4>
+                  <h4 className="font-outfit font-bold text-base text-black">No meetings yet</h4>
                   <p className="text-xs text-black/60 max-w-[480px] mx-auto leading-relaxed">
-                    Your administrator schedules meetings and sends the Revora bot into the call. As soon as a meeting
-                    you have access to finishes, its Gemini AI summary, transcript, and action items land right here.
+                    Meetings and transcripts you attend will automatically appear here once processed.
                   </p>
                 </div>
               )}
@@ -608,8 +744,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   </div>
                   <p className="text-xs text-black/60">Audio transcription provider for MeetingBaaS integration.</p>
                   <div className="px-3.5 py-2 rounded-xl bg-white border border-black/10 font-mono text-xs text-black font-semibold flex items-center justify-between">
-                    <span>Gladia v2 Realtime</span>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">Connected</span>
+                    <span>ElevenLabs Scribe · Batch</span>
+                    <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold">Default</span>
                   </div>
                 </div>
               </div>
@@ -639,9 +775,13 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                     <p className="text-xs text-black/50 font-mono">{user?.email || 'guest@revora.ai'}</p>
                     <div className="flex items-center gap-2 pt-1">
                       <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono ${
-                        user?.role === 'admin' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-[#0084FF]'
+                        user?.role === 'admin' 
+                          ? 'bg-amber-100 text-amber-800' 
+                          : user?.clientName || user?.role === 'client'
+                          ? 'bg-purple-100 text-purple-800'
+                          : 'bg-sky-100 text-[#0084FF]'
                       }`}>
-                        Role: {user?.role || 'user'}
+                        Role: {user?.clientName ? 'Client Account' : (user?.role || 'user')}
                       </span>
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700 font-mono">
                         Status: Active
@@ -675,12 +815,14 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="p-4 rounded-xl bg-neutral-50 border border-black/5">
                     <span className="text-black/50 font-medium block mb-1">User Identifier</span>
-                    <span className="font-mono font-bold text-black">{user?.id || 'demo_user'}</span>
+                    <span className="font-mono font-bold text-black">{user?.id || '—'}</span>
                   </div>
                   <div className="p-4 rounded-xl bg-neutral-50 border border-black/5">
-                    <span className="text-black/50 font-medium block mb-1">Account Created</span>
+                    <span className="text-black/50 font-medium block mb-1">
+                      {user?.clientName ? 'Client Organization' : 'Account Created'}
+                    </span>
                     <span className="font-mono font-bold text-black">
-                      {user?.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'Active Session'}
+                      {user?.clientName ? `${user.clientName}${user.clientCompany ? ` (${user.clientCompany})` : ''}` : (user?.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'Active Session')}
                     </span>
                   </div>
                 </div>
@@ -689,8 +831,8 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           </div>
         )}
 
-        {/* Modal 1: Schedule Meeting & Auto-Dispatch Briefing */}
-        {isCreateModalOpen && (
+        {/* Modal 1: Schedule Meeting & Auto-Dispatch Briefing (Admin Only) */}
+        {user?.role === 'admin' && isCreateModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
             <div className="bg-white rounded-[28px] max-w-[560px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between pb-3 border-b border-black/5">
@@ -756,6 +898,20 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                     value={meetingFormData.agenda}
                     onChange={(e) => setMeetingFormData({ ...meetingFormData, agenda: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black resize-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
+                    <Video className="w-3.5 h-3.5 text-[#0084FF]" />
+                    <span>Meeting Video URL (Optional)</span>
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://meet.google.com/xxx-xxxx-xxx or Zoom / Teams URL"
+                    value={meetingFormData.meetingUrl || ''}
+                    onChange={(e) => setMeetingFormData({ ...meetingFormData, meetingUrl: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
                   />
                 </div>
 
@@ -842,97 +998,41 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
         {/* Modal 3: Selected Meeting Details Modal */}
         {selectedMeeting && (
+          <MeetingDetailsModal
+            meeting={selectedMeeting}
+            onClose={handleCloseMeetingModal}
+            currentUser={user}
+            onMeetingUpdated={(updated) => {
+              setSelectedMeeting((prev) => ({ ...prev, ...updated }));
+              setMeetingsList((prev) => prev.map((m) => m.id === updated.id ? { ...m, ...updated } : m));
+            }}
+          />
+        )}
+
+        {/* Modal: Access Denied / Inaccessible Meeting for Direct Route */}
+        {meetingAccessDenied && routeMeetingId && !loadingMeetings && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-            <div className="bg-white rounded-[28px] max-w-[640px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[85vh] overflow-y-auto">
-              <div className="flex items-center justify-between pb-4 border-b border-black/5">
-                <div>
-                  <h3 className="font-outfit font-bold text-xl text-black">
-                    {selectedMeeting.title || 'Meeting Summary & AI Insights'}
-                  </h3>
-                  <p className="text-xs text-black/50 font-mono mt-0.5">
-                    Bot ID: {selectedMeeting.bot_id} • {selectedMeeting.meeting_url}
-                  </p>
-                </div>
+            <div className="bg-white rounded-[28px] max-w-[460px] w-full p-6 text-center space-y-4 border border-black/10 shadow-2xl">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-outfit font-bold text-lg text-black">Meeting Inaccessible</h3>
+                <p className="text-xs text-black/60 max-w-[360px] mx-auto leading-relaxed">
+                  This meeting either does not exist or you do not have authorization to access its records, transcripts, or briefings.
+                </p>
+              </div>
+              <div className="pt-2">
                 <button
                   onClick={handleCloseMeetingModal}
-                  className="px-3 py-1.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer"
+                  className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs transition-colors cursor-pointer shadow-xs"
                 >
-                  Close
+                  Return to My Meetings
                 </button>
               </div>
-
-              {selectedMeeting.recording_url && (
-                <a
-                  href={selectedMeeting.recording_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-between p-3.5 rounded-2xl bg-[#0084FF]/5 border border-[#0084FF]/20 hover:bg-[#0084FF]/10 transition-colors group"
-                >
-                  <span className="flex items-center gap-2.5 text-sm font-bold text-[#0084FF]">
-                    <Video className="w-4 h-4" />
-                    Watch Meeting Recording
-                  </span>
-                  <ExternalLink className="w-4 h-4 text-[#0084FF]/70 group-hover:text-[#0084FF]" />
-                </a>
-              )}
-
-              {selectedMeeting.summary && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Executive Summary</h4>
-                  <div className="p-4 rounded-2xl bg-sky-50/50 border border-sky-100 text-xs text-black/90 leading-relaxed font-sans">
-                    {selectedMeeting.summary}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.transcript && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-black uppercase tracking-wider">Full Transcript</h4>
-                    <span className="text-[11px] font-mono text-black/50">
-                      {selectedMeeting.transcript.split('\n').filter(Boolean).length} dialogue turns • {selectedMeeting.transcript.length} characters
-                    </span>
-                  </div>
-                  <div className="p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/80 font-mono whitespace-pre-wrap leading-relaxed max-h-[350px] overflow-y-auto shadow-inner">
-                    {selectedMeeting.transcript}
-                  </div>
-                </div>
-              )}
-
-              {Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold text-black uppercase tracking-wider">Assigned Action Items</h4>
-                  <div className="space-y-2">
-                    {selectedMeeting.action_items.map((item, idx) => (
-                      <ActionItemCard key={idx} item={item} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {selectedMeeting.error_message && (
-                <div className="flex items-start gap-2.5 p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-800 leading-relaxed">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
-                  <span>{selectedMeeting.error_message}</span>
-                </div>
-              )}
-
-              {!selectedMeeting.summary &&
-                !selectedMeeting.transcript &&
-                !selectedMeeting.error_message &&
-                !(Array.isArray(selectedMeeting.action_items) && selectedMeeting.action_items.length > 0) && (
-                  <div className="flex items-center gap-2.5 p-4 rounded-2xl bg-neutral-50 border border-black/5 text-xs text-black/60">
-                    <Clock className="w-4 h-4 shrink-0 text-[#0084FF]" />
-                    <span>
-                      No AI insights yet. Summary, transcript, and action items appear here automatically once the meeting
-                      ends and processing completes.
-                    </span>
-                  </div>
-                )}
             </div>
           </div>
         )}
-
       </main>
 
       {/* Task Extractor Modal */}

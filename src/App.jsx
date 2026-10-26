@@ -46,6 +46,21 @@ function LandingPage({ isLoginRoute = false }) {
     }
   }, [isLoginRoute, user, loading]);
 
+  // Handle post-OAuth redirect if an intent was stored
+  useEffect(() => {
+    if (user && !loading) {
+      const intent = sessionStorage.getItem('revora_auth_intent');
+      if (intent) {
+        sessionStorage.removeItem('revora_auth_intent');
+        if (intent === 'admin' && user.role === 'admin') {
+          navigate('/admin-dashboard', { replace: true });
+        } else {
+          navigate('/dashboard', { replace: true });
+        }
+      }
+    }
+  }, [user, loading, navigate]);
+
   // If authenticated user visits /login, redirect to /dashboard
   if (isLoginRoute && user && !loading) {
     return <Navigate to={user.role === 'admin' ? '/admin-dashboard' : '/dashboard'} replace />;
@@ -95,6 +110,7 @@ function LandingPage({ isLoginRoute = false }) {
         onOpenGetStartedModal={() => setIsGetStartedModalOpen(true)}
         onOpenCompanyModal={() => setIsCompanyModalOpen(true)}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
+        onNavigateDashboard={handleNavigateDashboard}
       />
 
       {/* Main Content */}
@@ -158,7 +174,6 @@ function LandingPage({ isLoginRoute = false }) {
         onClose={() => setIsDemoModalOpen(false)}
       />
 
-      {/* MODAL 6: Unified Login Modal */}
       {/* MODAL 6: Authentication Modal */}
       <LoginModal
         isOpen={isLoginModalOpen}

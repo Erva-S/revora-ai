@@ -128,23 +128,6 @@ export default function HeroSection({ onOpenTryModal, onOpenFeatureModal }) {
             transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
             className="flex flex-col justify-center items-start text-left max-w-[560px] lg:col-span-4 z-10"
           >
-            {/* CHARUSAT College Affiliation Badge */}
-            <motion.div
-              whileHover={{ scale: 1.02 }}
-              className="mb-3.5 px-3.5 py-1.5 rounded-full bg-[#0084FF]/10 border border-[#0084FF]/25 flex items-center gap-2.5 shadow-2xs"
-            >
-              <div className="p-1 rounded-md bg-white shadow-2xs flex items-center">
-                <img
-                  src="/college-logo.png"
-                  alt="CHARUSAT - Charotar University of Science and Technology"
-                  className="h-5 w-auto object-contain"
-                />
-              </div>
-              <span className="font-sans text-[12px] font-bold text-[#0066CC] tracking-tight">
-                CHARUSAT <span className="font-normal text-black/60 hidden sm:inline">• Charotar University of Science & Technology</span>
-              </span>
-            </motion.div>
-
             {/* Social Proof Badge */}
             <motion.div
               whileHover={{ scale: 1.02 }}

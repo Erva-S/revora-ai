@@ -182,7 +182,7 @@ export default function AttendeePicker({ selectedEmails = [], onChange }) {
         /* Manual fallback text input */
         <input
           type="text"
-          placeholder="e.g. rudrikakadiya26@gmail.com, 25cs027@charusat.edu.in"
+          placeholder="e.g. alex@example.com, sarah@company.com"
           value={typeof selectedEmails === 'string' ? selectedEmails : currentSelected.join(', ')}
           onChange={(e) => onChange(e.target.value)}
           className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"

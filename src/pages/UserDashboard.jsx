@@ -313,9 +313,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
           </button>
 
           <div className="font-fustat font-extrabold text-[20px] text-black flex items-center gap-2.5">
-            <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs flex items-center shrink-0" title="CHARUSAT">
-              <img src="/college-logo.png" alt="CHARUSAT Logo" className="h-6 w-auto object-contain" />
-            </div>
             <div className="h-7 w-7 rounded-lg flex items-center justify-center shrink-0">
               <img src="/revora-icon.png" alt="Revora" className="h-7 w-7 object-contain shrink-0" />
             </div>

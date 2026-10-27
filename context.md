@@ -65,7 +65,7 @@ Meetings generate crucial organizational decisions, architectural direction, and
   - Reads AI-generated context briefings before attending upcoming calls.
 
 ### A.3 Current Stage & Known Limitations
-- **Current Stage:** Functional beta / active academic & commercial prototype under development by **Futurrizon Technologies Ltd** and **Charusat University**.
+- **Current Stage:** Functional beta / active commercial prototype under development by **Futurrizon Technologies Ltd**.
 - **Known Limitations:**
   - Primary speech processing is batch-only post-call; there is no real-time live transcription streaming.
   - Two parallel migration histories exist: lexical replay (`supabase db reset`) on an empty database fails at `0004` unless ordered manually (documented in [CONTEXT_MANAGEMENT.md](file:///e:/OneDrive/Desktop/revora_cooking/futurrizon/CONTEXT_MANAGEMENT.md#L41-L47)).
@@ -345,7 +345,7 @@ futurrizon/
   - Meeting calendar and attendee profile directory integration.
   - 1-hour automated meeting reminder scheduler (`server/scheduler.js`).
 - **Organization / Institution:**
-  - Developed for **Futurrizon Technologies Ltd** and academic evaluation at **Charusat University** (Faculty of Technology & Engineering).
+  - Developed for **Futurrizon Technologies Ltd**.
 
 ### C.2 Product Goals & Design Philosophy
 - **Zero Friction for Attendees:** Attendees do not need to install browser extensions. An autonomous bot enters the meeting link directly and records the call.

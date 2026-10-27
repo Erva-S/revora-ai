@@ -49,20 +49,8 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
         >
           <div className="flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-6 py-1.5 h-full w-full">
             
-            {/* Brand Logo & College Logo */}
+            {/* Brand Logo */}
             <div className="flex items-center gap-2.5">
-              <a
-                href="#home"
-                title="CHARUSAT - Charotar University of Science and Technology"
-                className="flex items-center gap-2 bg-white/80 px-2 py-1 rounded-xl border border-black/5 shadow-2xs hover:bg-white transition-all shrink-0"
-              >
-                <img
-                  src="/college-logo.png"
-                  alt="CHARUSAT - Charotar University of Science and Technology"
-                  className="h-7 sm:h-8 w-auto object-contain shrink-0"
-                />
-              </a>
-              <div className="h-5 w-[1px] bg-black/15 shrink-0 hidden sm:block" />
               <a
                 href="#home"
                 className="flex items-center gap-2 group select-none"
@@ -175,20 +163,11 @@ export default function Navbar({ onOpenTryModal, onOpenGetStartedModal, onOpenCo
               <div>
                 <div className="flex items-center justify-between pb-6 border-b border-black/10">
                   <div className="flex items-center gap-2">
-                    <div className="p-1 rounded-lg bg-white border border-black/10 shadow-2xs">
-                      <img
-                        src="/college-logo.png"
-                        alt="CHARUSAT - Charotar University of Science and Technology"
-                        className="h-6 w-auto object-contain"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <img
-                        src="/revora-logo.png"
-                        alt="Revora"
-                        className="h-7 w-auto object-contain"
-                      />
-                    </div>
+                    <img
+                      src="/revora-logo.png"
+                      alt="Revora"
+                      className="h-7 w-auto object-contain"
+                    />
                   </div>
                   <button onClick={() => setMobileMenuOpen(false)} className="p-1 rounded-lg text-black/60">
                     <X className="w-5 h-5" />

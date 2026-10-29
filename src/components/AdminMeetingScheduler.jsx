@@ -10,6 +10,8 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUsers = [], projects: _projects = [], currentUserId = '' }) {
   const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.email === 'evv18407@gmail.com';
+
   const [activeMode, setActiveMode] = useState('schedule'); // 'schedule' | 'bot'
   const [title, setTitle] = useState('');
   const [recipientEmail, setRecipientEmail] = useState('');
@@ -17,6 +19,7 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
   const [agenda, setAgenda] = useState('');
   const [meetingUrl, setMeetingUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [sendBriefingEmail, setSendBriefingEmail] = useState(true);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
 
@@ -99,6 +102,7 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
     setSelectedClientId('');
     setSelectedProjectId('');
     setClientProjects([]);
+    setSendBriefingEmail(true);
     setError(null);
   };
 
@@ -148,6 +152,7 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
             project_id: selectedProjectId,
             meetingUrl: meetingUrl.trim() || null,
             meeting_url: meetingUrl.trim() || null,
+            sendEmail: sendBriefingEmail,
           }),
         });
         if (res.ok) {
@@ -159,6 +164,9 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
         }
       } catch (apiErr) {
         console.warn('Briefing API scheduling notice:', apiErr.message);
+        if (apiErr.name === 'TypeError' && (apiErr.message.includes('fetch') || apiErr.message.includes('NetworkError'))) {
+          throw new Error('Unable to connect to the backend server. Please ensure the backend server is running on port 5000 (npm run server).');
+        }
         throw apiErr;
       }
 
@@ -209,9 +217,14 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
       confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
       
       const isFallback = Boolean(emailInfo?.isFallback);
-      const successMsg = isFallback
-        ? `Meeting scheduled! (Notice: Google SMTP rejected password — Google requires an App Password for live inbox delivery). Generated preview:`
-        : `Meeting scheduled & briefing email dispatched directly to ${recipientEmail}!`;
+      let successMsg;
+      if (!sendBriefingEmail) {
+        successMsg = `Meeting "${title.trim()}" successfully scheduled!`;
+      } else if (isFallback) {
+        successMsg = `Meeting scheduled! (Notice: Google SMTP rejected password — Google requires an App Password for live inbox delivery). Generated preview:`;
+      } else {
+        successMsg = `Meeting scheduled & briefing email dispatched directly to ${recipientEmail}!`;
+      }
 
       setNotice({
         text: successMsg,
@@ -230,6 +243,10 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
       setSubmitting(false);
     }
   };
+
+  if (!isAdmin) {
+    return null;
+  }
 
   return (
     <div className="rounded-2xl bg-white border border-slate-200/80 shadow-xs font-sans overflow-hidden">
@@ -336,7 +353,15 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
 
       {/* Mode 1: Schedule New Meeting (Visible by default instead of the old bot card) */}
       {activeMode === 'schedule' && (
-        <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4">
+        <form
+          onSubmit={handleSubmit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
+              e.preventDefault();
+            }
+          }}
+          className="p-5 sm:p-6 space-y-4"
+        >
           {/* Client & Project Selection Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Client Selection */}
@@ -494,31 +519,43 @@ export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUs
             />
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={handleReset}
-              className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-xs font-bold text-slate-600 cursor-pointer transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs shadow-md transition-all hover:scale-102 flex items-center gap-2 cursor-pointer disabled:opacity-50"
-            >
-              {submitting ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Dispatching AI Brief...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Schedule & Auto-Dispatch</span>
-                </>
-              )}
-            </button>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-100">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-700 font-medium">
+              <input
+                type="checkbox"
+                checked={sendBriefingEmail}
+                onChange={(e) => setSendBriefingEmail(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 text-[#0084FF] focus:ring-[#0084FF]/20 cursor-pointer"
+              />
+              <span>Generate and dispatch AI briefing email to attendees upon scheduling</span>
+            </label>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleReset}
+                className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-xs font-bold text-slate-600 cursor-pointer transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs shadow-md transition-all hover:scale-102 flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {submitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Scheduling Meeting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>{sendBriefingEmail ? 'Schedule & Send Briefing' : 'Schedule Meeting'}</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </form>
       )}

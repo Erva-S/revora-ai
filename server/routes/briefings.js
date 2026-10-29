@@ -219,11 +219,12 @@ router.post('/', async (req, res) => {
       meetingUrl: validMeetingUrl,
     });
 
-    // 5. Dispatch Email to Attendees using mailer module
+    // 5. Dispatch Email to Attendees using mailer module (only if requested)
     let emailStatus = { dispatched: false, error: null, previewUrl: null };
     const rawEmails = (recipientEmail || '').split(',').map((e) => e.trim()).filter(Boolean);
+    const shouldDispatchEmail = req.body.sendEmail !== false && req.body.dispatchEmail !== false;
 
-    if (rawEmails.length > 0) {
+    if (shouldDispatchEmail && rawEmails.length > 0) {
       emailStatus = await sendScheduledBriefingEmail({
         recipients: rawEmails,
         title: meeting.title,
@@ -234,6 +235,8 @@ router.post('/', async (req, res) => {
         agenda: agenda || summaryText,
         creatorEmail: authorEmail,
       });
+    } else {
+      emailStatus = { dispatched: false, skipped: true, error: null, previewUrl: null };
     }
 
     res.status(201).json({

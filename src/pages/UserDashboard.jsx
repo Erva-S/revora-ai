@@ -41,17 +41,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
   const [linkedPlannedMeeting, setLinkedPlannedMeeting] = useState(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
 
-  // Meeting Creation State
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [isSubmittingMeeting, setIsSubmittingMeeting] = useState(false);
-  const [meetingFormData, setMeetingFormData] = useState({
-    title: '',
-    recipientEmail: '',
-    agenda: '',
-    scheduledAt: '',
-    meetingUrl: '',
-  });
-
   // Archive Modal State
   const [isArchiveModalOpen, setIsArchiveModalOpen] = useState(false);
   const [archiveSearch, setArchiveSearch] = useState('');
@@ -219,49 +208,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
     }
   };
 
-  const handleScheduleMeeting = async (e) => {
-    e.preventDefault();
-    if (!meetingFormData.title.trim()) return;
-
-    try {
-      setIsSubmittingMeeting(true);
-
-      const res = await fetch(`${API_BASE_URL}/api/briefings`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-user-email': user?.email || '',
-          'x-user-id': user?.id || '',
-          'x-user-role': user?.role || 'user',
-        },
-        body: JSON.stringify({
-          title: meetingFormData.title,
-          recipientEmail: meetingFormData.recipientEmail || user?.email,
-          agenda: meetingFormData.agenda,
-          scheduledAt: meetingFormData.scheduledAt,
-          creatorEmail: user?.email,
-          creatorUserId: user?.id,
-          meetingUrl: meetingFormData.meetingUrl?.trim() || null,
-          meeting_url: meetingFormData.meetingUrl?.trim() || null,
-        }),
-      });
-
-      if (!res.ok) throw new Error('Failed to schedule meeting briefing');
-
-      confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
-      setMeetingFormData({ title: '', recipientEmail: '', agenda: '', scheduledAt: '', meetingUrl: '' });
-      setIsCreateModalOpen(false);
-
-      await fetchBriefings();
-      await fetchMeetings();
-    } catch (err) {
-      console.error('Error scheduling meeting:', err);
-      alert('Could not schedule meeting: ' + err.message);
-    } finally {
-      setIsSubmittingMeeting(false);
-    }
-  };
-
   const filteredArchive = briefingsList.filter((b) =>
     (b.title || '').toLowerCase().includes(archiveSearch.toLowerCase()) ||
     (b.agenda || '').toLowerCase().includes(archiveSearch.toLowerCase())
@@ -332,10 +278,11 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
 
         {/* Primary Schedule Button & User Profile Badge */}
         <div className="flex items-center gap-3">
-          {user?.role === 'admin' && (
+          {(user?.role === 'admin' || user?.email === 'evv18407@gmail.com') && (
             <button
-              onClick={() => setIsCreateModalOpen(true)}
+              onClick={() => navigate('/admin-dashboard')}
               className="px-3.5 py-2 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs hover:scale-105 cursor-pointer"
+              title="Open Admin Meeting Scheduler"
             >
               <PlusCircle className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Schedule Meeting</span>
@@ -454,7 +401,7 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                 <p className="font-sans text-sm text-white/80 mt-2 leading-relaxed">
                   {user?.clientName
                     ? `Accessing your dedicated client workspace for ${user.clientName}. View your project meetings, recordings, AI briefings, and transcripts with secure data isolation.`
-                    : 'Your Revora AI assistant is active and ready to schedule meetings, transcribe live calls, and extract action items.'}
+                    : 'Your Revora AI assistant is active and ready to transcribe live calls, summarize meetings, and extract action items.'}
                 </p>
               </div>
 
@@ -824,121 +771,6 @@ export default function UserDashboard({ onNavigateHome, onOpenTryModal, defaultT
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* Modal 1: Schedule Meeting & Auto-Dispatch Briefing (Admin Only) */}
-        {user?.role === 'admin' && isCreateModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-            <div className="bg-white rounded-[28px] max-w-[560px] w-full p-6 space-y-5 border border-black/10 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between pb-3 border-b border-black/5">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-sky-100 text-[#0084FF] flex items-center justify-center">
-                    <PlusCircle className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-outfit font-bold text-lg text-black">Schedule New Meeting</h3>
-                    <p className="text-xs text-black/50">Auto-generate and email an AI briefing to attendees</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="p-1.5 rounded-xl hover:bg-black/5 text-black/60 hover:text-black transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <form onSubmit={handleScheduleMeeting} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1">
-                    Meeting Title <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Q4 Sprint Planning & Architecture Sync"
-                    value={meetingFormData.title}
-                    onChange={(e) => setMeetingFormData({ ...meetingFormData, title: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
-                  />
-                </div>
-
-                {/* Attendee Directory Multi-Select Picker */}
-                <AttendeePicker
-                  selectedEmails={meetingFormData.recipientEmail}
-                  onChange={(emails) => setMeetingFormData({ ...meetingFormData, recipientEmail: emails })}
-                />
-
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-[#0084FF]" />
-                    <span>Scheduled Date & Time</span>
-                  </label>
-                  <input
-                    type="datetime-local"
-                    value={meetingFormData.scheduledAt}
-                    onChange={(e) => setMeetingFormData({ ...meetingFormData, scheduledAt: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
-                    <AlignLeft className="w-3.5 h-3.5 text-[#0084FF]" />
-                    <span>Meeting Context & Agenda</span>
-                  </label>
-                  <textarea
-                    rows={3}
-                    placeholder="Briefly outline topics to cover, goals, or prerequisites for the Gemini AI brief..."
-                    value={meetingFormData.agenda}
-                    onChange={(e) => setMeetingFormData({ ...meetingFormData, agenda: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black resize-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-black mb-1 flex items-center gap-1.5">
-                    <Video className="w-3.5 h-3.5 text-[#0084FF]" />
-                    <span>Meeting Video URL (Optional)</span>
-                  </label>
-                  <input
-                    type="url"
-                    placeholder="https://meet.google.com/xxx-xxxx-xxx or Zoom / Teams URL"
-                    value={meetingFormData.meetingUrl || ''}
-                    onChange={(e) => setMeetingFormData({ ...meetingFormData, meetingUrl: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
-                  />
-                </div>
-
-                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-black/5">
-                  <button
-                    type="button"
-                    onClick={() => setIsCreateModalOpen(false)}
-                    className="px-4 py-2.5 rounded-xl bg-black/5 hover:bg-black/10 text-xs font-bold text-black/70 cursor-pointer transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSubmittingMeeting}
-                    className="px-5 py-2.5 rounded-xl bg-[#0084FF] hover:bg-[#0070D8] text-white font-bold text-xs shadow-md transition-all hover:scale-102 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  >
-                    {isSubmittingMeeting ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Dispatching AI Brief...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Schedule & Auto-Dispatch</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
         )}

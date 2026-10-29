@@ -104,6 +104,12 @@ export default function AttendeePicker({ selectedEmails = [], onChange }) {
               placeholder="Search team members by name, role or email..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }
+              }}
               className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-neutral-50 border border-black/10 text-xs focus:outline-none focus:border-[#0084FF]"
             />
           </div>
@@ -185,6 +191,12 @@ export default function AttendeePicker({ selectedEmails = [], onChange }) {
           placeholder="e.g. alex@example.com, sarah@company.com"
           value={typeof selectedEmails === 'string' ? selectedEmails : currentSelected.join(', ')}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }}
           className="w-full px-3.5 py-2.5 rounded-xl border border-black/10 bg-neutral-50 focus:bg-white focus:border-[#0084FF] focus:outline-none text-xs text-black"
         />
       )}

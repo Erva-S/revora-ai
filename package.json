@@ -21,8 +21,6 @@
     "react-router-dom": "^7.18.3"
   },
   "devDependencies": {
-    "@oxlint/binding-win32-x64-msvc": "^1.88.0",
-    "@rolldown/binding-win32-x64-msvc": "^1.2.13",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

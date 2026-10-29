@@ -12,7 +12,7 @@ import { meetingStageLabel, meetingStageClasses } from '../lib/meetingStatus';
 import { transcriptDisplayText, transcriptParagraphs } from '../lib/transcriptDisplay';
 import { subscribeToMeetingChanges } from '../lib/meetingRealtime';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 /**
  * Platform detector from meeting URL

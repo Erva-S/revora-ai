@@ -1,7 +1,16 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 const nodemailer = require('nodemailer');
 
-const APP_URL = process.env.APP_URL || process.env.VITE_APP_URL || 'http://localhost:5173';
+function getAppUrl(subPath = '') {
+  const base = process.env.APP_URL || process.env.VITE_APP_URL || 'http://localhost:5173';
+  try {
+    return new URL(subPath.replace(/^\//, ''), base.endsWith('/') ? base : `${base}/`).toString();
+  } catch (_) {
+    const cleanBase = base.replace(/\/+$/, '');
+    const cleanPath = subPath ? (subPath.startsWith('/') ? subPath : `/${subPath}`) : '';
+    return `${cleanBase}${cleanPath}`;
+  }
+}
 
 /**
  * Returns a configured nodemailer transporter with SMTP fallback.
@@ -351,7 +360,7 @@ async function sendPostMeetingResultsEmail({
 
     const cleanMeetingUrl = normalizeMeetingUrl(meetingUrl);
 
-    const revoraDetailsUrl = meetingId ? `${APP_URL}/meetings/${meetingId}` : `${APP_URL}/dashboard`;
+    const revoraDetailsUrl = meetingId ? getAppUrl(`/meetings/${meetingId}`) : getAppUrl('/dashboard');
 
     const actionItemsHtml = Array.isArray(actionItems) && actionItems.length > 0 ? `
       <div style="margin: 20px 0;">

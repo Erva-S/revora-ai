@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Sparkles, CheckSquare, X, Copy, Check, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+
 export default function TaskExtractorModal({ isOpen, onClose }) {
   const [transcript, setTranscript] = useState('');
   const [tasks, setTasks] = useState('');
@@ -16,7 +18,7 @@ export default function TaskExtractorModal({ isOpen, onClose }) {
     setTasks('');
 
     try {
-      const res = await fetch('http://localhost:5000/api/meetings/extract-tasks', {
+      const res = await fetch(`${API_BASE_URL}/api/meetings/extract-tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcript }),

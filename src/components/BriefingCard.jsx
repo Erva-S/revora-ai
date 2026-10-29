@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Calendar, User, FileText, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 const formatBriefingData = (raw) => {
   if (!raw) return null;

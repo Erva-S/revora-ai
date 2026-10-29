@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import AttendeePicker from './AttendeePicker';
 import MeetingBotDeployer from './MeetingBotDeployer';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export default function AdminMeetingScheduler({ onMeetingScheduled, assignableUsers = [], projects: _projects = [], currentUserId = '' }) {
   const { user } = useAuth();
